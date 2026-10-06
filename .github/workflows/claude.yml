@@ -4,6 +4,8 @@
 #   - review:  every pull request that is opened, updated, reopened or marked ready for review
 #              gets an automatic review: inline comments on problems, or one summary comment.
 #              Drafts and bot-opened PRs (Dependabot, Renovate) are skipped.
+#              The review plugin skips a PR that Claude has already commented on, so after
+#              pushing more commits ask for a fresh one with "@claude review".
 #              Project rules for the reviewer are in CLAUDE.md.
 #   - respond: mention @claude in a PR or issue comment (or a PR review comment) to ask a
 #              question or request a change. Only users with write access can trigger it.
@@ -73,3 +75,6 @@ jobs:
       - uses: anthropics/claude-code-action@58985842b834ed26087302ba27d07bc24ca8697a # v1.0.244
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Turns on the CI tools (run status, job logs); the job permission above alone is not enough.
+          additional_permissions: |
+            actions: read

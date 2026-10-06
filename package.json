@@ -1,0 +1,13 @@
+{
+  "name": "foundry-release-proxy",
+  "version": "1.0.0",
+  "description": "Proxy that lets Foundry VTT install and update modules released from private GitHub repositories",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "src/server.js",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/server.test.js"
+  }
+}

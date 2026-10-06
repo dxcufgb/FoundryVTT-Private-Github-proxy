@@ -188,7 +188,7 @@ function createApp({ modules, token, publicBaseUrl, fetchImpl = fetch, log = con
   function send(res, status, body, headers = {}) {
     res.writeHead(status, {
       'Content-Type': 'text/plain; charset=utf-8',
-      'Cache-Control': 'no-store',
+      'Cache-Control': 'public, max-age=3600',
       ...headers,
     });
     res.end(body);

@@ -177,15 +177,27 @@ function Invoke-Update {
     $restore = Join-Path $work 'restore'
     Copy-Item -LiteralPath $BackupDir -Destination $restore -Recurse
     $restoreInstaller = Join-Path $restore 'scripts\install-service.ps1'
-    if (Test-Path -LiteralPath $restoreInstaller) {
-        Invoke-Installer $restoreInstaller $node | Out-Null
+    $restored = $true
+    try {
+        if (Test-Path -LiteralPath $restoreInstaller) {
+            $restored = (Invoke-Installer $restoreInstaller $node) -eq 0
+        }
+        else {
+            if (Test-Path -LiteralPath $AppDir) { Remove-Item -LiteralPath $AppDir -Recurse -Force }
+            Copy-Item -LiteralPath $BackupDir -Destination $AppDir -Recurse
+            if ($wasRunning) { Start-ScheduledTask -TaskName $TaskName }
+        }
+        if ($restored -and $wasRunning) {
+            Start-Sleep -Seconds 10
+            $restored = Test-ProxyRunning
+        }
     }
-    else {
-        if (Test-Path -LiteralPath $AppDir) { Remove-Item -LiteralPath $AppDir -Recurse -Force }
-        Copy-Item -LiteralPath $BackupDir -Destination $AppDir -Recurse
-        if ($wasRunning) { Start-ScheduledTask -TaskName $TaskName }
+    catch {
+        Write-ProxyLog "restore error: $($_.Exception.Message)"
+        $restored = $false
     }
-    throw "update to $version rolled back; see the log above"
+    if ($restored) { throw "update to $version rolled back to $installed; see the log above" }
+    throw "ROLLBACK FAILED: $installed could not be restored; reinstall it by hand from $BackupDir (scripts\install-service.ps1 -Upgrade)"
 }
 
 $exitCode = 1

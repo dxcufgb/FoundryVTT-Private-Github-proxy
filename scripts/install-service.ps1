@@ -139,7 +139,9 @@ function Resolve-NodePath {
     if ($node.StartsWith($usersDir, [StringComparison]::OrdinalIgnoreCase)) {
         throw "node.exe at $node is inside a user profile (nvm?), which LOCAL SERVICE cannot use. Install Node.js for all users or pass -NodePath."
     }
-    $version = (& $node -p 'process.versions.node').Trim()
+    $version = & $node -p 'process.versions.node'
+    if ($LASTEXITCODE -ne 0 -or -not $version) { throw "cannot run $node to read its version" }
+    $version = "$version".Trim()
     $parts = $version.Split('.') | ForEach-Object { [int]$_ }
     if ($parts[0] -lt 20 -or ($parts[0] -eq 20 -and $parts[1] -lt 6)) {
         throw "Node.js $version is too old; the Windows service needs 20.6 or newer (node --env-file)."

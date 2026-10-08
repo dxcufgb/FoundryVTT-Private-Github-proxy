@@ -219,7 +219,8 @@ download **without** the token, refuses anything that is not HTTPS or larger tha
 SHA-256. The script then unpacks it into a fresh temporary folder (refusing paths outside the archive's top folder),
 copies the current code to `/opt/foundry-release-proxy.prev` (`C:\Program Files\FoundryReleaseProxy.prev`), runs the
 new release's installer in upgrade mode (non-interactive) and checks that the proxy is running again. If anything
-fails, the previous version is reinstalled from that copy. A lock (`flock` / a named mutex) stops two runs at once.
+fails, the previous version is reinstalled from that copy and checked to be running again; if that also fails, the
+log says `ROLLBACK FAILED` with the command to reinstall it by hand from the `.prev` folder. A lock (`flock` / a named mutex) stops two runs at once.
 `config.json`, `env` and their owners, modes and ACLs are never changed by an update.
 
 **Token for the updater.** This repository is private, so the updater needs a GitHub token that can read its releases.

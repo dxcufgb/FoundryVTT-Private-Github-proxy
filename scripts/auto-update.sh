@@ -105,10 +105,14 @@ log "install of $version failed or the service did not come back; restoring $ins
 if [[ -f "$BACKUP_DIR/scripts/install-service.sh" ]]; then
     restore="$work/restore"
     cp -a "$BACKUP_DIR" "$restore"
-    bash "$restore/scripts/install-service.sh" --upgrade || true
+    restored=yes
+    bash "$restore/scripts/install-service.sh" --upgrade || restored=no
 else
-    rm -rf "$APP_DIR"
-    cp -a "$BACKUP_DIR" "$APP_DIR"
-    if [[ "$was_active" == yes ]]; then systemctl restart "$SERVICE_NAME" || true; fi
+    restored=yes
+    if ! { rm -rf "$APP_DIR" && cp -a "$BACKUP_DIR" "$APP_DIR"; }; then restored=no; fi
+    if [[ "$was_active" == yes ]]; then systemctl restart "$SERVICE_NAME" || restored=no; fi
 fi
-fail "update to $version rolled back; see the log above"
+if [[ "$restored" == yes ]] && healthy; then
+    fail "update to $version rolled back to $installed; see the log above"
+fi
+fail "ROLLBACK FAILED: $installed could not be restored; reinstall it by hand from $BACKUP_DIR (sudo bash $BACKUP_DIR/scripts/install-service.sh --upgrade)"

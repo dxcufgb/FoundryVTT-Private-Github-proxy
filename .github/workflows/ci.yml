@@ -1,7 +1,8 @@
 # Runs on every push and pull request:
 #   - the unit tests (node --test) on every supported Node version
-#   - a syntax check of the server entry point
-#   - shellcheck on the systemd install script
+#   - a syntax check of the server entry point and the updater
+#   - shellcheck on the Linux scripts
+#   - PSScriptAnalyzer and a parse check on the Windows PowerShell scripts
 # The proxy has no npm dependencies, so there is nothing to install.
 
 name: CI
@@ -36,8 +37,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Entry point parses
-        run: node --check src/server.js
+      - name: Entry points parse
+        run: |
+          node --check src/server.js
+          node --check src/updater.js
 
       - name: Unit tests
         run: npm test
@@ -51,5 +54,28 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Shellcheck the install script
+      - name: Shellcheck the scripts
         run: shellcheck scripts/*.sh
+
+  powershell:
+    name: PSScriptAnalyzer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # PSScriptAnalyzer ships with the runner image; the scripts themselves target Windows PowerShell 5.1.
+      - name: Analyze the Windows scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in Get-ChildItem scripts/*.ps1) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) { $errors | ForEach-Object { Write-Output "::error file=$($file.Name)::$_" }; $failed = $true }
+          }
+          $results = Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Warning, Error
+          $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Output
+          if ($results -or $failed) { exit 1 }

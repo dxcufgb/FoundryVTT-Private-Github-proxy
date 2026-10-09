@@ -4,20 +4,35 @@ A single-file Node HTTP proxy (`src/server.js`) that lets Foundry VTT install an
 released from **private** GitHub repositories. It holds a GitHub token, serves a module's
 `module.json` from the latest (or a tagged) release with `manifest`/`download` rewritten to point
 at the proxy, and answers zip requests with a `302` to GitHub's pre-signed asset URL. It runs as a
-systemd service on a Raspberry Pi next to Foundry.
+systemd service on a Raspberry Pi next to Foundry, or as a Windows scheduled task. An opt-in auto-updater
+installs new releases of the proxy itself.
 
 ## Layout
 - `src/server.js` – the whole app. Exports `createApp`, `loadConfig`, `parseConfig`, `ConfigError`;
   `main()` only runs when executed directly.
-- `test/server.test.js` – `node:test` suite with an injected `fetchImpl` mock (no network).
-- `scripts/install-service.sh` – systemd installer (`sudo`, `--uninstall`).
+- `src/updater.js` – self-update helper for the proxy itself (not for Foundry modules): `--check` /
+  `--download` the latest release of this repo, verify it against `SHA256SUMS`. Exit 0 = up to date,
+  10 = update available/downloaded, 1 = error. Installing is left to the scripts.
+- `test/server.test.js`, `test/updater.test.js` – `node:test` suites with an injected `fetchImpl` mock
+  (no network).
+- `scripts/install-service.sh` – systemd installer (`sudo`; `--auto-update`, `--enable-auto-update`,
+  `--disable-auto-update`, `--check`, `--update-now`, `--uninstall`). Code in `/opt/foundry-release-proxy`
+  (root-owned), settings in `/etc/foundry-release-proxy/`.
+- `scripts/auto-update.sh` – run as root by the `foundry-release-proxy-update` timer: locks, extracts,
+  backs up to `/opt/foundry-release-proxy.prev`, runs `install-service.sh --upgrade`, rolls back on failure.
+- `scripts/install-service.ps1`, `scripts/auto-update.ps1` – the same for Windows: code in
+  `C:\Program Files\FoundryReleaseProxy`, settings and logs in `C:\ProgramData\FoundryReleaseProxy`; the proxy
+  runs as LOCAL SERVICE, the daily update task as SYSTEM.
+- `scripts/build-release.sh` – builds the `.tar.gz` (Linux), `.zip` (Windows) and `SHA256SUMS`;
+  `.github/workflows/release.yml` runs it on a `v*` tag and publishes the release.
 - `config.example.json`, `.env.example` – templates. Real `config.json`/`.env` are gitignored.
 
 ## Commands
 - `npm test` – the unit tests. `npm start` – run the server.
 - Local run: `GITHUB_TOKEN=... CONFIG_FILE=config.example.json node src/server.js`
-- CI (`.github/workflows/ci.yml`): `node --check src/server.js` + `npm test` on Node 20/22/24,
-  and `shellcheck scripts/*.sh`. Workflow changes are linted by actionlint and zizmor.
+- CI (`.github/workflows/ci.yml`): `node --check` on `src/server.js` and `src/updater.js` + `npm test` on
+  Node 20/22/24, `shellcheck scripts/*.sh`, and PSScriptAnalyzer on `scripts/*.ps1`. Workflow changes are
+  linted by actionlint and zizmor.
 
 ## Conventions
 - CommonJS, `'use strict'`, **no npm dependencies** – Node built-ins and global `fetch` only.
@@ -27,8 +42,8 @@ systemd service on a Raspberry Pi next to Foundry.
 - Errors: `ConfigError` → exit 1 ("refusing to start"), `NotFound` → 404,
   `GithubError` → 502 with a generic body, anything else → 500 "internal error".
 - Logging is one plain line through the injected `log`, prefixed with the module id.
-- Behaviour changes need a test in `test/server.test.js` and matching README edits (the README
-  documents routes, status codes and error messages).
+- Behaviour changes need a test in `test/server.test.js` (or `test/updater.test.js`) and matching
+  README edits (the README documents routes, status codes and error messages).
 
 ## Review focus
 - **The token** may only go to `api.github.com` and to asset URLs taken from GitHub's JSON. The
@@ -48,4 +63,13 @@ systemd service on a Raspberry Pi next to Foundry.
 - Installer: re-running it must never overwrite `/etc/foundry-release-proxy/config.json` or
   `env`; `env` stays mode 600 owned by the service user; keep the systemd hardening and keep the
   script clean under shellcheck.
+- **Auto-update** stays opt-in and runs as root (Linux) / SYSTEM (Windows). Its token is the proxy's
+  `GITHUB_TOKEN` from `env` or a separate `updater-token` (root 600 / Administrators+SYSTEM only); it goes
+  only to `api.github.com` and is never on a command line or in a log. Downloads must match `SHA256SUMS`;
+  only strictly newer, non-draft, non-prerelease versions install. Root/SYSTEM must never run code a
+  non-admin account can change: the Linux code folder stays `root:root`, the Windows one stays under
+  Program Files (admin-only write). Upgrades keep `config.json` and `env`; a failed install puts the
+  previous code back.
+- **Versions**: the release tag must be `v<package.json version>` (checked by `release.yml`).
+- PowerShell scripts must run on Windows PowerShell 5.1 and stay PSScriptAnalyzer-clean.
 - `engines` says Node >= 18 but CI tests 20/22/24; avoid APIs newer than Node 20.

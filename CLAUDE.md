@@ -1,6 +1,6 @@
 # Foundry release proxy
 
-A single-file Node HTTP proxy (`src/server.js`) that lets Foundry VTT install and update modules
+A dependency-free Node HTTP proxy (`src/server.js`) that lets Foundry VTT install and update modules
 released from **private** GitHub repositories. It holds a GitHub token, serves a module's
 `module.json` from the latest (or a tagged) release with `manifest`/`download` rewritten to point
 at the proxy, and answers zip requests with a `302` to GitHub's pre-signed asset URL. It runs as a
@@ -8,7 +8,7 @@ systemd service on a Raspberry Pi next to Foundry, or as a Windows scheduled tas
 installs new releases of the proxy itself.
 
 ## Layout
-- `src/server.js` – the whole app. Exports `createApp`, `loadConfig`, `parseConfig`, `ConfigError`;
+- `src/server.js` – the HTTP proxy (everything except self-update). Exports `createApp`, `loadConfig`, `parseConfig`, `ConfigError`;
   `main()` only runs when executed directly.
 - `src/updater.js` – self-update helper for the proxy itself (not for Foundry modules): `--check` /
   `--download` the latest release of this repo, verify it against `SHA256SUMS`. Exit 0 = up to date,

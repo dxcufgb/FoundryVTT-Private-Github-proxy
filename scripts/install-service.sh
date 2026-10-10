@@ -37,6 +37,7 @@ UPDATER_TOKEN_FILE="$CONF_DIR/updater-token"
 UPDATE_REPO="dxcufgb/FoundryVTT-Realese-proxy"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Print command usage to stderr and exit with status 2.
 usage() {
     sed -n '4,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
     exit 2
@@ -65,6 +66,7 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# Return success only for a terminal session outside an unattended upgrade.
 interactive() { [[ "$upgrade" == no && -t 0 ]]; }
 
 # KEY=value from auto-update.conf without sourcing it.
@@ -73,6 +75,7 @@ setting() {
     sed -n "s/^$1=//p" "$AUTO_CONF" | tail -n 1
 }
 
+# Stop and disable the update timer, then remove its service and timer unit files.
 remove_updater_units() {
     systemctl disable --now "${SERVICE_NAME}-update.timer" 2>/dev/null || true
     rm -f "$UPDATE_UNIT" "$UPDATE_TIMER"
@@ -103,6 +106,7 @@ if [[ "$NODE_BIN" == /home/* || "$NODE_BIN" == /root/* ]]; then
 fi
 BASH_BIN="$(readlink -f "$(command -v bash)")"
 
+# Run the installed updater with mode $1 and the configured paths; return its exit status.
 run_updater() {
     if [[ ! -f "$APP_DIR/scripts/auto-update.sh" ]]; then
         echo "$APP_DIR has no updater; install this version first: sudo $0" >&2
@@ -152,12 +156,14 @@ choose_updater_token() {
     fi
 }
 
+# Persist enabled state $1 and token path $2 in a root-owned, mode-600 settings file.
 write_auto_conf() {
     (umask 077 && printf 'AUTO_UPDATE=%s\nTOKEN_FILE=%s\n' "$1" "$2" > "$AUTO_CONF")
     chown root:root "$AUTO_CONF"
     chmod 600 "$AUTO_CONF"
 }
 
+# Write hardened daily update units, reload systemd and enable the update timer.
 install_updater_units() {
     local parent
     parent="$(dirname "$APP_DIR")"
@@ -205,6 +211,7 @@ UNIT
     systemctl enable --now "${SERVICE_NAME}-update.timer" >/dev/null
 }
 
+# Save the token choice, enable daily updates and check access unless upgrading unattended.
 enable_auto_update() {
     local token_file
     token_file="$(choose_updater_token)"
@@ -221,6 +228,7 @@ enable_auto_update() {
     fi
 }
 
+# Remove update units and the separate token, then persist the disabled state.
 disable_auto_update() {
     remove_updater_units
     systemctl daemon-reload

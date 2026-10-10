@@ -23,12 +23,17 @@ const REPO = 'dxcufgb/FoundryVTT-Realese-proxy';
 const LATEST = `${API}/repos/${REPO}/releases/latest`;
 const TOKEN = 'updater-token-secret';
 
+/** Create a JSON response fixture with the requested HTTP status. */
 const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status });
+/** Create a redirect response fixture pointing to the supplied location. */
 const redirect = (location) => new Response(null, { status: 302, headers: { location } });
+/** Return the hexadecimal SHA-256 digest of fixture data. */
 const sha = (data) => crypto.createHash('sha256').update(data).digest('hex');
 
+/** Create a fetch stub that dispatches URL routes and records requests in its calls array. */
 function mockFetch(routes) {
   const calls = [];
+  /** Record a request and invoke its route handler; reject unexpected URLs. */
   const fn = async (url, init = {}) => {
     calls.push({ url, init });
     const handler = routes[url];
@@ -39,6 +44,7 @@ function mockFetch(routes) {
   return fn;
 }
 
+/** Build release metadata with archive and checksum assets, allowing field overrides. */
 function release(tag, extra = {}) {
   const v = tag.replace(/^v/, '');
   const names = [`foundry-release-proxy-${v}.tar.gz`, `foundry-release-proxy-${v}.zip`, 'SHA256SUMS'];
@@ -51,7 +57,7 @@ function release(tag, extra = {}) {
   };
 }
 
-// A full release: lookup, SHA256SUMS and archive behind pre-signed redirects.
+/** Build release lookup and asset routes, with optional checksum data for mismatch tests. */
 function releaseRoutes(tag, archive, { sumsFor = archive } = {}) {
   const rel = release(tag);
   const v = tag.replace(/^v/, '');
@@ -66,6 +72,7 @@ function releaseRoutes(tag, archive, { sumsFor = archive } = {}) {
   return { rel, routes };
 }
 
+/** Create and return an isolated temporary directory; the caller must remove it. */
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'updater-test-'));
 }
@@ -207,6 +214,7 @@ test('download: missing SHA256SUMS entry, non-HTTPS redirect, oversized body and
   {
     const { rel, routes } = releaseRoutes('v1.1.0', archive);
     const big = new ReadableStream({
+      /** Feed one MiB per read so the download test exercises the streamed size limit. */
       pull(controller) {
         controller.enqueue(new Uint8Array(1024 * 1024));
       },
@@ -227,6 +235,7 @@ test('download: missing SHA256SUMS entry, non-HTTPS redirect, oversized body and
   fs.rmSync(dir, { recursive: true });
 });
 
+/** Create a temporary install containing version and token fixtures; the caller must remove it. */
 function fakeInstall(version) {
   const dir = tmpdir();
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version }));
@@ -237,6 +246,7 @@ function fakeInstall(version) {
 test('cli: --check reports and exits 0 when current, 10 when newer; never prints the token', async () => {
   const dir = fakeInstall('1.0.0');
   const out = [];
+  /** Collect CLI output for assertions without writing it to the console. */
   const log = (l) => out.push(l);
   const args = ['--check', '--app-dir', dir, '--token-file', path.join(dir, 'token')];
 

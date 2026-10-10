@@ -19,7 +19,9 @@ BACKUP_DIR="${APP_DIR}.prev"
 LOCK_FILE="/run/lock/${SERVICE_NAME}-update.lock"
 AUTO_CONF="$CONF_DIR/auto-update.conf"
 
+# Write the supplied message to stdout with the updater prefix.
 log() { echo "auto-update: $*"; }
+# Write the supplied error to stderr and exit with status 1.
 fail() { echo "auto-update: ERROR: $*" >&2; exit 1; }
 
 mode="${1:-}"
@@ -91,6 +93,7 @@ cp -a "$APP_DIR" "$BACKUP_DIR"
 log "backed up $installed to $BACKUP_DIR; installing $version"
 
 export SERVICE_NAME APP_DIR CONF_DIR NODE_BIN
+# If the service was active before updating, wait ten seconds and return its active status.
 healthy() {
     [[ "$was_active" == no ]] && return 0
     sleep 10

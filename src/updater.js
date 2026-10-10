@@ -32,13 +32,14 @@ const EXIT_ERROR = 1;
 
 class UpdateError extends Error {}
 
+/** Parse version text into major, minor, patch and prerelease parts; return null on invalid syntax. */
 function parseVersion(text) {
   const m = SEMVER_RE.exec(String(text).trim());
   if (!m) return null;
   return { major: +m[1], minor: +m[2], patch: +m[3], pre: m[4] ? m[4].split('.') : [] };
 }
 
-// Semantic Versioning 2.0.0 precedence: <0, 0 or >0. Build metadata is ignored.
+/** Semantic Versioning 2.0.0 precedence: <0, 0 or >0. Build metadata is ignored. */
 function compareVersions(a, b) {
   const va = typeof a === 'string' ? parseVersion(a) : a;
   const vb = typeof b === 'string' ? parseVersion(b) : b;
@@ -62,7 +63,7 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// Parses `sha256sum` output: "<64 hex>  <name>" or "<64 hex> *<name>". Returns a name -> hash map.
+/** Parses `sha256sum` output: "<64 hex>  <name>" or "<64 hex> *<name>". Returns a name -> hash map. */
 function parseSha256Sums(text) {
   const sums = Object.create(null);
   for (const line of String(text).split(/\r?\n/)) {
@@ -74,12 +75,13 @@ function parseSha256Sums(text) {
   return sums;
 }
 
+/** Return the release filename for a version and format; reject formats other than tar.gz or zip. */
 function archiveName(version, format) {
   if (format !== 'tar.gz' && format !== 'zip') throw new UpdateError(`unknown archive format "${format}"`);
   return `${PACKAGE}-${version}.${format}`;
 }
 
-// Picks the archive and SHA256SUMS assets of a release.
+/** Picks the archive and SHA256SUMS assets of a release. */
 function selectAssets(release, format) {
   const version = String(release.tag_name).replace(/^v/, '');
   const name = archiveName(version, format);
@@ -91,7 +93,7 @@ function selectAssets(release, format) {
   return { archive, sums };
 }
 
-// Token from a file: a GITHUB_TOKEN=... line (env-file syntax) or the first non-comment line.
+/** Token from a file: a GITHUB_TOKEN=... line (env-file syntax) or the first non-comment line. */
 function parseTokenFile(text) {
   const lines = String(text)
     .split(/\r?\n/)
@@ -104,9 +106,11 @@ function parseTokenFile(text) {
   return token === 'REPLACE_ME' || token === 'github_pat_REPLACE_ME' ? '' : token;
 }
 
+/** Create release lookup, check and download helpers using a required token and injectable fetch/logger. */
 function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REPO }) {
   if (!token) throw new UpdateError('no GitHub token for the updater (see README, "Automatic updates")');
 
+  /** Build GitHub API headers with the updater token and the requested response media type. */
   const apiHeaders = (accept) => ({
     Authorization: `Bearer ${token}`,
     Accept: accept,
@@ -114,6 +118,7 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
     'User-Agent': `${PACKAGE}-updater`,
   });
 
+  /** Fetch an HTTPS URL with a timeout, rejecting authenticated requests outside the GitHub API. */
   async function request(url, init, timeoutMs, what) {
     if (!url.startsWith('https://')) throw new UpdateError(`${what}: refusing non-HTTPS URL`);
     if (init.headers && init.headers.Authorization && !url.startsWith(`${GITHUB_API}/`)) {
@@ -127,7 +132,7 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
     }
   }
 
-  // Reads a response body, refusing more than `limit` bytes.
+  /** Reads a response body, refusing more than `limit` bytes. */
   async function readCapped(res, limit, what) {
     const declared = Number(res.headers.get('content-length'));
     if (declared > limit) {
@@ -151,6 +156,7 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
     return Buffer.concat(chunks);
   }
 
+  /** Fetch and parse the latest release within the size cap; throw UpdateError on lookup or data errors. */
   async function latestRelease() {
     const res = await request(
       `${GITHUB_API}/repos/${repo}/releases/latest`,
@@ -177,7 +183,7 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
     return release;
   }
 
-  // Release asset via the API URL: token on the API request only, the redirect target is fetched WITHOUT it.
+  /** Release asset via the API URL: token on the API request only, the redirect target is fetched WITHOUT it. */
   async function downloadAsset(asset, limit) {
     const what = `download of ${asset.name}`;
     if (typeof asset.url !== 'string' || !asset.url.startsWith(`${GITHUB_API}/repos/${repo}/releases/assets/`)) {
@@ -208,7 +214,7 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
     return readCapped(res, limit, what);
   }
 
-  // Returns { current, latest, newer, release }. Drafts and prereleases never count as an update.
+  /** Returns { current, latest, newer, release }. Drafts and prereleases never count as an update. */
   async function check(currentVersion) {
     const current = parseVersion(currentVersion);
     if (!current) throw new UpdateError(`installed version "${currentVersion}" is not a semantic version`);
@@ -220,7 +226,7 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
     return { current: String(currentVersion).replace(/^v/, ''), latest: release.tag_name.replace(/^v/, ''), newer, release };
   }
 
-  // Downloads and verifies the archive into `dir`. Returns the file path.
+  /** Downloads and verifies the archive into `dir`. Returns the file path. */
   async function download(release, format, dir) {
     const { archive, sums } = selectAssets(release, format);
     const sumsText = (await downloadAsset(sums, MAX_SUMS_BYTES)).toString('utf8');
@@ -238,10 +244,12 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
   return { check, download, latestRelease };
 }
 
+/** Parse CLI arguments with platform defaults; reject unknown options, missing values or a missing mode. */
 function parseArgs(argv) {
   const opts = { format: process.platform === 'win32' ? 'zip' : 'tar.gz', appDir: path.join(__dirname, '..') };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    /** Consume the next argument as the current option value; throw UpdateError if none remains. */
     const value = () => {
       if (i + 1 >= argv.length) throw new UpdateError(`${arg} needs a value`);
       return argv[++i];
@@ -259,6 +267,7 @@ function parseArgs(argv) {
   return opts;
 }
 
+/** Run a release check or download; return 0 if current, 10 for an update, or 1 for an expected error. */
 async function main(argv = process.argv.slice(2), { env = process.env, fetchImpl = fetch, log = console.log } = {}) {
   try {
     const opts = parseArgs(argv);

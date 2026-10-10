@@ -3,6 +3,7 @@
 #   - a syntax check of the server entry point and the updater
 #   - shellcheck on the Linux scripts
 #   - PSScriptAnalyzer and a parse check on the Windows PowerShell scripts
+#   - a real run of install.sh on the Ubuntu runner (systemd) and of the Inno Setup installer on the Windows runner
 # The proxy has no npm dependencies, so there is nothing to install.
 
 name: CI
@@ -55,7 +56,7 @@ jobs:
           persist-credentials: false
 
       - name: Shellcheck the scripts
-        run: shellcheck scripts/*.sh
+        run: shellcheck install.sh scripts/*.sh
 
   powershell:
     name: PSScriptAnalyzer
@@ -71,11 +72,85 @@ jobs:
         shell: pwsh
         run: |
           $failed = $false
-          foreach ($file in Get-ChildItem scripts/*.ps1) {
+          foreach ($file in Get-ChildItem scripts/*.ps1, packaging/windows/*.ps1) {
             $tokens = $null; $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
             if ($errors) { $errors | ForEach-Object { Write-Output "::error file=$($file.Name)::$_" }; $failed = $true }
           }
-          $results = Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Warning, Error
+          $results = 'scripts', 'packaging' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Warning, Error }
           $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Output
           if ($results -or $failed) { exit 1 }
+
+  linux-install:
+    name: install.sh (systemd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Fake token: the proxy only has to start and answer 404 for a module that is not configured.
+      FOUNDRY_PROXY_GITHUB_TOKEN: github_pat_ci_not_a_real_token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install with the system Node.js
+        run: sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN ./install.sh --module demo=octo/demo
+
+      - name: Proxy answers
+        run: |
+          code=000
+          for _ in $(seq 1 15); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/not-a-module/module.json || true)"
+            [ "$code" = 404 ] && break
+            sleep 1
+          done
+          systemctl is-active foundry-release-proxy
+          grep -q '"demo"' /etc/foundry-release-proxy/config.json
+          test "$(stat -c '%a %U' /etc/foundry-release-proxy/env)" = "600 foundry-proxy"
+          test "$code" = 404
+
+      - name: Uninstall
+        run: |
+          sudo ./install.sh --uninstall
+          test ! -e /opt/foundry-release-proxy
+          test ! -e /etc/systemd/system/foundry-release-proxy.service
+
+      - name: Install again with a downloaded Node.js
+        env:
+          NODE_BIN: /nonexistent/node
+        run: sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN,NODE_BIN ./install.sh --install-node --module demo=octo/demo
+
+      - name: Proxy answers with the downloaded Node.js
+        run: |
+          code=000
+          for _ in $(seq 1 15); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/not-a-module/module.json || true)"
+            [ "$code" = 404 ] && break
+            sleep 1
+          done
+          grep -q 'ExecStart=/opt/foundry-release-proxy-node/bin/node ' /etc/systemd/system/foundry-release-proxy.service
+          test "$code" = 404
+
+  windows-installer:
+    name: Inno Setup installer
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Inno Setup (if the runner image lacks it)
+        shell: pwsh
+        run: |
+          $found = (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -or
+            (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") -or (Test-Path "$env:ProgramFiles\Inno Setup 6\ISCC.exe")
+          if (-not $found) { choco install innosetup -y --no-progress }
+
+      - name: Build the installer
+        shell: powershell
+        run: .\packaging\windows\build-installer.ps1 -OutDir dist
+
+      - name: Install, check and uninstall it
+        shell: powershell
+        run: .\packaging\windows\smoke-test.ps1 -Installer (Get-ChildItem dist\*.exe).FullName

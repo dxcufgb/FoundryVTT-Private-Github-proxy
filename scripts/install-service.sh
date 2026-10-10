@@ -9,6 +9,7 @@
 #   sudo ./scripts/install-service.sh --check               # is a newer release available? (report only)
 #   sudo ./scripts/install-service.sh --update-now          # install the latest release now
 #   sudo ./scripts/install-service.sh --uninstall           # stop + remove service, updater and code (keeps /etc config)
+#   sudo ./scripts/install-service.sh --module ID=OWNER/REPO  # first install: put this module in config.json (repeatable)
 #
 # Layout (the config survives code updates; re-running this script never overwrites it):
 #   /opt/foundry-release-proxy/                   code (replaced on every run)
@@ -18,8 +19,9 @@
 #   /etc/foundry-release-proxy/auto-update.conf   auto-update on/off and which token it uses (root, 600)
 #   /etc/foundry-release-proxy/updater-token      only if the updater has its own token (root, 600)
 #
-# Automatic updates are off unless asked for. The updater token is taken from a prompt or from the
-# UPDATER_GITHUB_TOKEN environment variable, never from the command line.
+# Automatic updates are off unless asked for. The tokens are taken from a prompt or from the environment
+# (FOUNDRY_PROXY_GITHUB_TOKEN for the proxy, UPDATER_GITHUB_TOKEN for the updater), never from the command line.
+# ./install.sh in the repository root wraps this script and also sets up Node.js when the system has none.
 #
 # Logs:    journalctl -u foundry-release-proxy -f      (updates: journalctl -u foundry-release-proxy-update)
 # Control: sudo systemctl {start|stop|restart|status} foundry-release-proxy
@@ -39,15 +41,24 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Print command usage to stderr and exit with status 2.
 usage() {
-    sed -n '4,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '4,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
+orig_args=("$@")
 action=install
 auto_update=""     # yes/no when asked for on the command line, empty = keep the current choice
 upgrade=no         # --upgrade: non-interactive, used by the updater
-for arg in "$@"; do
+modules=()         # ID=OWNER/REPO entries for a new config.json
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
     case "$arg" in
+        --module)
+            [[ $# -gt 0 ]] || { echo "--module needs ID=OWNER/REPO" >&2; usage; }
+            modules+=("$1")
+            shift
+            ;;
         --auto-update) auto_update=yes ;;
         --no-auto-update) auto_update=no ;;
         --upgrade) upgrade=yes ;;
@@ -62,7 +73,7 @@ for arg in "$@"; do
 done
 
 if [[ $EUID -ne 0 ]]; then
-    echo "Please run with sudo: sudo $0 $*" >&2
+    echo "Please run with sudo: sudo $0 ${orig_args[*]}" >&2
     exit 1
 fi
 
@@ -246,6 +257,25 @@ if [[ "$action" == enable || "$action" == disable ]]; then
     exit 0
 fi
 
+# Write a config.json for the ID=OWNER/REPO entries $2.. to file $1 and check it with the proxy's own validation.
+write_modules_config() {
+    local out="$1"
+    shift
+    "$NODE_BIN" -e '
+        const fs = require("node:fs");
+        const config = {};
+        for (const entry of process.argv.slice(3)) {
+            const i = entry.indexOf("=");
+            if (i < 1) { console.error("--module needs ID=OWNER/REPO, got: " + entry); process.exit(1); }
+            config[entry.slice(0, i)] = { repo: entry.slice(i + 1) };
+        }
+        const text = JSON.stringify(config, null, 2) + "\n";
+        try { require(process.argv[1]).parseConfig(text, "--module"); }
+        catch (err) { console.error(err.message); process.exit(1); }
+        fs.writeFileSync(process.argv[2], text);
+    ' "$SRC_DIR/src/server.js" "$out" "$@"
+}
+
 # Dedicated unprivileged user.
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
@@ -267,12 +297,24 @@ fi
 # Config + env: created once, never overwritten.
 install -d -m 750 -o root -g "$SERVICE_USER" "$CONF_DIR"
 if [[ ! -f "$CONF_DIR/config.json" ]]; then
-    install -m 640 -o root -g "$SERVICE_USER" "$SRC_DIR/config.example.json" "$CONF_DIR/config.json"
-    echo "Wrote example config $CONF_DIR/config.json - edit it to list your modules."
+    if [[ ${#modules[@]} -gt 0 ]]; then
+        config_tmp="$(mktemp)"
+        write_modules_config "$config_tmp" "${modules[@]}"
+        install -m 640 -o root -g "$SERVICE_USER" "$config_tmp" "$CONF_DIR/config.json"
+        rm -f "$config_tmp"
+        echo "Wrote $CONF_DIR/config.json with: ${modules[*]}"
+    else
+        install -m 640 -o root -g "$SERVICE_USER" "$SRC_DIR/config.example.json" "$CONF_DIR/config.json"
+        echo "Wrote example config $CONF_DIR/config.json - edit it to list your modules."
+    fi
+elif [[ ${#modules[@]} -gt 0 ]]; then
+    echo "Keeping the existing $CONF_DIR/config.json; ignoring --module (edit the file to add modules)." >&2
 fi
 if [[ ! -f "$CONF_DIR/env" ]]; then
     token="REPLACE_ME"
-    if interactive; then
+    if [[ -n "${FOUNDRY_PROXY_GITHUB_TOKEN:-}" ]]; then
+        token="$FOUNDRY_PROXY_GITHUB_TOKEN"
+    elif interactive; then
         read -rsp "GitHub token (fine-grained, Contents: read-only; Enter to fill in later): " input || true
         echo
         [[ -n "${input:-}" ]] && token="$input"

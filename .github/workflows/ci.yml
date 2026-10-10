@@ -105,8 +105,8 @@ jobs:
             sleep 1
           done
           systemctl is-active foundry-release-proxy
-          grep -q '"demo"' /etc/foundry-release-proxy/config.json
-          test "$(stat -c '%a %U' /etc/foundry-release-proxy/env)" = "600 foundry-proxy"
+          sudo grep -q '"demo"' /etc/foundry-release-proxy/config.json
+          test "$(sudo stat -c '%a %U' /etc/foundry-release-proxy/env)" = "600 foundry-proxy"
           test "$code" = 404
 
       - name: Uninstall

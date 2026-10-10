@@ -296,6 +296,10 @@ downtime). The previous version stays in the `.prev` folder until the next updat
    `foundry-release-proxy-windows.zip`, and `SHA256SUMS` with `scripts/build-release.sh`, and publishes the GitHub
    release. Installs with automatic updates pick it up within a day.
 
+If a run fails, fix the cause and start it again (re-run the workflow, or run it again on `main`): the draft left by the
+failed run is replaced. A published release is never changed, and a run refuses to publish if the tag meanwhile points
+at a different commit than the one it built.
+
 The release notes start with a download table per OS (`scripts/release-notes.sh`: links to this release's files, the
 always-latest links and the Linux install commands), followed by GitHub's list of merged pull requests.
 

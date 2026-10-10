@@ -163,11 +163,18 @@ jobs:
       - name: Publish the draft
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
           TAG: ${{ needs.build.outputs.tag }}
         run: |
-          # if the tag appeared on another commit while this run was building, the files would not match it
-          if commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha 2>/dev/null)" && [[ "$commit" != "$GITHUB_SHA" ]]; then
-            echo "::error::tag $TAG points at $commit, but this run built $GITHUB_SHA; delete the draft and release again"
+          # the tag must point at the commit this run built; only a manual run may find no tag yet (GitHub creates it
+          # on publishing), any other lookup failure stops the run
+          if commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha 2> "$RUNNER_TEMP/lookup.err")"; then
+            if [[ "$commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::tag $TAG points at $commit, but this run built $GITHUB_SHA; delete the draft and release again"
+              exit 1
+            fi
+          elif [[ "$EVENT" != "workflow_dispatch" ]] || ! grep -q 'No commit found' "$RUNNER_TEMP/lookup.err"; then
+            echo "::error::could not look up tag $TAG: $(cat "$RUNNER_TEMP/lookup.err")"
             exit 1
           fi
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

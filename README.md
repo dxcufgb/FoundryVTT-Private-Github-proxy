@@ -301,6 +301,20 @@ Build the same archives locally with `./scripts/build-release.sh dist` (needs `t
 installer with `.\packaging\windows\build-installer.ps1` (needs Inno Setup 6.3+, e.g. `choco install innosetup`).
 CI also runs `install.sh` on an Ubuntu runner and the Windows installer on a Windows runner for every push.
 
+## Branch protection
+
+`main` is meant to be changed only through pull requests: squash merge only, one approval, the tests, shellcheck,
+PSScriptAnalyzer, the `install.sh` run and the Windows installer build must pass, and nobody can delete `main` or
+force-push it (the repository admin can bypass through a pull request). It is the same rule as in the other
+FoundryVTT repositories and is kept in `.github/ruleset-protect-main.json`.
+
+GitHub only enforces rulesets and branch protection on **private** repositories with a paid plan (GitHub Pro or a
+team/organization plan); on the free plan the API answers "Upgrade to GitHub Pro or make this repository public". Once that
+is available: *Settings → Rules → Rulesets → New ruleset → Import a ruleset* and pick the file. Also set *Settings →
+General → Pull Requests* to squash merging only, "Automatically delete head branches" and "Always suggest updating pull
+request branches", and turn on *Settings → Security → Private vulnerability reporting*. Until then the same rules hold
+by convention: open a pull request, wait for CI, squash merge.
+
 ## Troubleshooting
 
 - Windows installer says the setup failed: read `C:\Program Files\FoundryReleaseProxy\install.log`; the proxy's own log is

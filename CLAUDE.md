@@ -31,6 +31,10 @@ installs new releases of the proxy itself.
 - `scripts/build-release.sh` – builds the `.tar.gz` (Linux), `.zip` (Windows) and `SHA256SUMS`;
   `.github/workflows/release.yml` runs it on a `v*` tag, builds the Windows installer on a Windows runner and
   publishes the release (a draft until the installer is attached).
+- `.github/ruleset-protect-main.json` – the "Protect main" ruleset (squash only, 1 approval, required CI checks), the same
+  as in the other FoundryVTT repos; importable only on a plan that allows rulesets on private repos. Keep its check names in
+  step with the job names in `ci.yml` (only jobs that run on every PR belong in it). `.github/` also holds the PR and issue
+  templates and `SECURITY.md`.
 - `config.example.json`, `.env.example` – templates. Real `config.json`/`.env` are gitignored.
 
 ## Commands
@@ -77,6 +81,8 @@ installs new releases of the proxy itself.
   non-admin account can change: the Linux code folder stays `root:root`, the Windows one stays under
   Program Files (admin-only write). Upgrades keep `config.json` and `env`; a failed install puts the
   previous code back.
+- `main` is protected by convention (and by the ruleset where the plan allows): changes go through pull requests, merged
+  with squash.
 - **Versions**: the release tag must be `v<package.json version>` (checked by `release.yml`).
 - The Windows installer must not duplicate `install-service.ps1`: the wizard only collects answers, writes `config.json`
   if absent and calls the script (token via `FOUNDRY_PROXY_GITHUB_TOKEN`, never on a command line). Node.js stays outside the

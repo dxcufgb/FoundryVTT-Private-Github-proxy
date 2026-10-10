@@ -1,0 +1,43 @@
+name: Bug report
+description: The proxy or one of its installers does not behave as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: proxy-version
+    attributes:
+      label: Proxy version
+      placeholder: "1.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Linux, Windows, Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it was installed
+      options: [install.sh, Windows installer (.exe), install-service.ps1, Run by hand, Other]
+  - type: input
+    id: foundry-version
+    attributes:
+      label: Foundry VTT version
+      placeholder: "13.348"
+  - type: textarea
+    id: log
+    attributes:
+      label: Log output
+      description: >-
+        `journalctl -u foundry-release-proxy -n 50` (Linux) or
+        `C:\ProgramData\FoundryReleaseProxy\logs\proxy.log` (Windows). Remove your GitHub token before pasting.
+      render: text

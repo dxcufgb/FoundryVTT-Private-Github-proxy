@@ -28,9 +28,12 @@ installs new releases of the proxy itself.
 - `packaging/windows/` – the Inno Setup installer: `foundry-release-proxy.iss` (wizard + bundled Node.js in
   `Program Files\FoundryReleaseProxy-Node`, then runs `install-service.ps1 -Upgrade`), `stop-proxy.ps1`,
   `build-installer.ps1` (downloads and verifies Node, runs ISCC) and `smoke-test.ps1` (silent install/uninstall, run by CI).
-- `scripts/build-release.sh` – builds the `.tar.gz` (Linux), `.zip` (Windows) and `SHA256SUMS`;
-  `.github/workflows/release.yml` runs it on a `v*` tag, builds the Windows installer on a Windows runner and
-  publishes the release (a draft until the installer is attached).
+- `scripts/build-release.sh` – builds the `.tar.gz` (Linux), `.zip` (Windows), copies of both under fixed names
+  (`foundry-release-proxy-linux.tar.gz`, `-windows.zip`, for `releases/latest/download/` links) and `SHA256SUMS`;
+  `scripts/release-notes.sh` prints the per-OS download table that heads the release notes.
+  `.github/workflows/release.yml` runs them on a `v*` tag or a manual run on `main` (tags `v<package.json version>`),
+  builds the Windows installer on a Windows runner (plus a `FoundryReleaseProxy-Setup.exe` copy) and publishes the
+  release (a draft until the installer is attached).
 - `.github/ruleset-protect-main.json` – the "Protect main" ruleset (squash only, 1 approval, required CI checks), the same
   as in the other FoundryVTT repos; importable only on a plan that allows rulesets on private repos. Keep its check names in
   step with the job names in `ci.yml` (only jobs that run on every PR belong in it). `.github/` also holds the PR and issue

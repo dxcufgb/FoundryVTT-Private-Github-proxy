@@ -286,16 +286,35 @@ downtime). The previous version stays in the `.prev` folder until the next updat
 ## Releases
 
 1. Bump `version` in `package.json` (e.g. `1.2.0`) and merge it to `main`.
-2. Tag that commit and push the tag: `git tag v1.2.0 && git push origin v1.2.0`.
-3. `.github/workflows/release.yml` checks that the tag equals `v` + the `package.json` version, runs the tests, builds
-   `foundry-release-proxy-<version>.tar.gz`, `foundry-release-proxy-<version>.zip` and `SHA256SUMS` with
-   `scripts/build-release.sh`, and publishes the GitHub release with those three files. Installs with automatic
-   updates pick it up within a day.
+2. Start the release, either way:
+   - *Actions → Release → Run workflow* on `main`: releases main's head as `v` + its `package.json` version (refused if
+     that tag already exists; the tag is created on that commit when the release is published), or
+   - tag the commit yourself and push the tag: `git tag v1.2.0 && git push origin v1.2.0` (the tag must equal `v` + the
+     `package.json` version).
+3. `.github/workflows/release.yml` runs the tests, builds `foundry-release-proxy-<version>.tar.gz`,
+   `foundry-release-proxy-<version>.zip`, the same two as `foundry-release-proxy-linux.tar.gz` and
+   `foundry-release-proxy-windows.zip`, and `SHA256SUMS` with `scripts/build-release.sh`, and publishes the GitHub
+   release. Installs with automatic updates pick it up within a day.
+
+The release notes start with a download table per OS (`scripts/release-notes.sh`: links to this release's files, the
+always-latest links and the Linux install commands), followed by GitHub's list of merged pull requests.
+
+**Stable per-OS links.** Each release also carries its files under fixed names, so these links always give the newest
+release (you have to be signed in to GitHub with access to this private repository):
+
+| OS | Link |
+| --- | --- |
+| Windows installer | `https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest/download/FoundryReleaseProxy-Setup.exe` |
+| Windows archive | `https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest/download/foundry-release-proxy-windows.zip` |
+| Linux / Raspberry Pi | `https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest/download/foundry-release-proxy-linux.tar.gz` |
+
+On a machine without a browser: `gh release download --repo dxcufgb/FoundryVTT-Private-Github-proxy --pattern
+foundry-release-proxy-linux.tar.gz`. The auto-updater keeps using the versioned file names.
 
 Besides the archives, the workflow builds `FoundryReleaseProxy-Setup-<version>.exe` on a Windows runner
 (`packaging/windows/`: Inno Setup script, `build-installer.ps1`, and `smoke-test.ps1`, which installs and uninstalls the
-exe silently and checks that the proxy answers), and only publishes the release once that worked. The exe and its
-`.sha256` are extra assets; the auto-updater keeps using the archives and `SHA256SUMS`.
+exe silently and checks that the proxy answers), and only publishes the release once that worked. The exe, its copy
+`FoundryReleaseProxy-Setup.exe` and their `.sha256` files are extra assets; the auto-updater keeps using the archives and `SHA256SUMS`.
 
 Build the same archives locally with `./scripts/build-release.sh dist` (needs `tar`, `zip`, `sha256sum`) and the Windows
 installer with `.\packaging\windows\build-installer.ps1` (needs Inno Setup 6.3+, e.g. `choco install innosetup`).

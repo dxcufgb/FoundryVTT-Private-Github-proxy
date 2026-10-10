@@ -1,11 +1,17 @@
-# Publishes a GitHub release when a version tag (v1.2.3) is pushed:
-#   1. the tag must equal "v" + the version in package.json
-#   2. the unit tests must pass
-#   3. scripts/build-release.sh builds foundry-release-proxy-<version>.tar.gz (Linux), .zip (Windows) and SHA256SUMS;
-#      they go into a DRAFT release (the auto-updater ignores drafts)
-#   4. a Windows runner builds FoundryReleaseProxy-Setup-<version>.exe (Inno Setup), installs and uninstalls it as a
-#      smoke test, and adds it and its .sha256 to the draft
-#   5. only then the draft is published, so a failed installer build never leaves a half release behind
+# Publishes a GitHub release, started either way:
+#   - push a version tag (v1.2.3) that equals "v" + the version in package.json, or
+#   - Actions -> Release -> Run workflow on main: releases the package.json version of main's head as v<version>
+#     (refused if that tag already exists); the tag is created on that commit when the release is published
+# Then:
+#   1. the unit tests must pass
+#   2. scripts/build-release.sh builds foundry-release-proxy-<version>.tar.gz (Linux), .zip (Windows), the same two under
+#      fixed names (foundry-release-proxy-linux.tar.gz, foundry-release-proxy-windows.zip) and SHA256SUMS; they go into a
+#      DRAFT release (the auto-updater ignores drafts) whose notes start with per-OS download links
+#      (scripts/release-notes.sh) followed by GitHub's generated notes
+#   3. a Windows runner builds FoundryReleaseProxy-Setup-<version>.exe (Inno Setup), installs and uninstalls it as a
+#      smoke test, and adds it, a copy named FoundryReleaseProxy-Setup.exe and their .sha256 files to the draft
+#   4. only then the draft is published, so a failed installer build never leaves a half release behind
+# The fixed names make https://github.com/<repo>/releases/latest/download/<name> a stable link per OS.
 # Release steps are in the README ("Releases").
 
 name: Release
@@ -13,6 +19,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions: {}
 
@@ -27,6 +34,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write # create the draft release and upload its assets
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,15 +46,30 @@ jobs:
           node-version: 22
           package-manager-cache: false
 
-      - name: Tag matches package.json
+      - name: Release version
+        id: version
         env:
-          TAG: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="$(node -p 'require("./package.json").version')"
-          if [[ "$TAG" != "v$version" ]]; then
-            echo "::error::tag $TAG does not match package.json version $version (expected v$version)"
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            if [[ "$REF" != "refs/heads/main" ]]; then
+              echo "::error::run the release workflow on main (got $REF)"
+              exit 1
+            fi
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version" --silent 2>/dev/null; then
+              echo "::error::tag v$version already exists; bump the version in package.json first"
+              exit 1
+            fi
+          elif [[ "$REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $REF_NAME does not match package.json version $version (expected v$version)"
             exit 1
           fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Syntax check
         run: |
@@ -58,12 +82,21 @@ jobs:
       - name: Build archives
         run: ./scripts/build-release.sh dist
 
+      - name: Release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./scripts/release-notes.sh "$VERSION" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/notes.md"
+
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag --draft
+          # a pushed tag must exist; a manual run creates the tag on this commit when the draft is published
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then tag_opt=(--target "$GITHUB_SHA"); else tag_opt=(--verify-tag); fi
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md" --generate-notes "${tag_opt[@]}" --draft
 
   installer:
     name: Windows installer
@@ -96,9 +129,15 @@ jobs:
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
-          $files = Get-ChildItem dist\FoundryReleaseProxy-Setup-*.exe, dist\FoundryReleaseProxy-Setup-*.exe.sha256 | ForEach-Object { $_.FullName }
+          # a copy under a fixed name for .../releases/latest/download/FoundryReleaseProxy-Setup.exe
+          $exe = (Get-ChildItem dist\FoundryReleaseProxy-Setup-*.exe).FullName
+          $latest = Join-Path (Split-Path $exe) 'FoundryReleaseProxy-Setup.exe'
+          Copy-Item -LiteralPath $exe -Destination $latest
+          $hash = (Get-FileHash -LiteralPath $latest -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$latest.sha256", "$hash  FoundryReleaseProxy-Setup.exe`n", (New-Object System.Text.UTF8Encoding $false))
+          $files = $exe, "$exe.sha256", $latest, "$latest.sha256"
           gh release upload $env:TAG @files --repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
@@ -113,5 +152,5 @@ jobs:
       - name: Publish the draft
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

@@ -34,7 +34,7 @@ AppId={{C8D7F34D-E87D-4D25-930B-EDDD67F22470}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=dxcufgb
-AppPublisherURL=https://github.com/dxcufgb/FoundryVTT-Realese-proxy
+AppPublisherURL=https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy
 ; install-service.ps1 and the updater expect the code in C:\Program Files\FoundryReleaseProxy, so the folder is fixed.
 DefaultDirName={commonpf}\{#DataFolder}
 DisableDirPage=yes
@@ -178,7 +178,7 @@ begin
   UpdatePage := CreateInputOptionPage(SettingsPage.ID, 'Automatic updates',
     'Keep the proxy itself up to date',
     'Optional. The proxy checks the GitHub releases of this project once a day and installs newer versions. ' +
-    'It uses the token above, so that token also needs Contents: read-only on dxcufgb/FoundryVTT-Realese-proxy.',
+    'It uses the token above, so that token also needs Contents: read-only on dxcufgb/FoundryVTT-Private-Github-proxy.',
     False, False);
   UpdatePage.Add('Turn on automatic updates');
   UpdatePage.Values[0] := (ExpandConstant('{param:AUTOUPDATE|0}') = '1') or AutoUpdateWasOn;

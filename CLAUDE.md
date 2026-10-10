@@ -15,7 +15,9 @@ installs new releases of the proxy itself.
   10 = update available/downloaded, 1 = error. Installing is left to the scripts.
 - `test/server.test.js`, `test/updater.test.js` – `node:test` suites with an injected `fetchImpl` mock
   (no network).
-- `scripts/install-service.sh` – systemd installer (`sudo`; `--auto-update`, `--enable-auto-update`,
+- `install.sh` – Linux entry point: finds a system-wide Node (>= 18) or downloads the official Node 22 (SHA-256 checked) to
+  `/opt/foundry-release-proxy-node`, exports `NODE_BIN`, then runs `scripts/install-service.sh` (passes its options on).
+- `scripts/install-service.sh` – systemd installer (`sudo`; `--module ID=OWNER/REPO`, `--auto-update`, `--enable-auto-update`,
   `--disable-auto-update`, `--check`, `--update-now`, `--uninstall`). Code in `/opt/foundry-release-proxy`
   (root-owned), settings in `/etc/foundry-release-proxy/`.
 - `scripts/auto-update.sh` – run as root by the `foundry-release-proxy-update` timer: locks, extracts,
@@ -23,15 +25,20 @@ installs new releases of the proxy itself.
 - `scripts/install-service.ps1`, `scripts/auto-update.ps1` – the same for Windows: code in
   `C:\Program Files\FoundryReleaseProxy`, settings and logs in `C:\ProgramData\FoundryReleaseProxy`; the proxy
   runs as LOCAL SERVICE, the daily update task as SYSTEM.
+- `packaging/windows/` – the Inno Setup installer: `foundry-release-proxy.iss` (wizard + bundled Node.js in
+  `Program Files\FoundryReleaseProxy-Node`, then runs `install-service.ps1 -Upgrade`), `stop-proxy.ps1`,
+  `build-installer.ps1` (downloads and verifies Node, runs ISCC) and `smoke-test.ps1` (silent install/uninstall, run by CI).
 - `scripts/build-release.sh` – builds the `.tar.gz` (Linux), `.zip` (Windows) and `SHA256SUMS`;
-  `.github/workflows/release.yml` runs it on a `v*` tag and publishes the release.
+  `.github/workflows/release.yml` runs it on a `v*` tag, builds the Windows installer on a Windows runner and
+  publishes the release (a draft until the installer is attached).
 - `config.example.json`, `.env.example` – templates. Real `config.json`/`.env` are gitignored.
 
 ## Commands
 - `npm test` – the unit tests. `npm start` – run the server.
 - Local run: `GITHUB_TOKEN=... CONFIG_FILE=config.example.json node src/server.js`
 - CI (`.github/workflows/ci.yml`): `node --check` on `src/server.js` and `src/updater.js` + `npm test` on
-  Node 20/22/24, `shellcheck scripts/*.sh`, and PSScriptAnalyzer on `scripts/*.ps1`. Workflow changes are
+  Node 20/22/24, `shellcheck install.sh scripts/*.sh`, PSScriptAnalyzer on `scripts/*.ps1` and `packaging/windows/*.ps1`, an
+  `install.sh` run under systemd on the runner, and a silent install/uninstall of the Inno Setup exe on a Windows runner. Workflow changes are
   linted by actionlint and zizmor.
 
 ## Conventions
@@ -71,5 +78,8 @@ installs new releases of the proxy itself.
   Program Files (admin-only write). Upgrades keep `config.json` and `env`; a failed install puts the
   previous code back.
 - **Versions**: the release tag must be `v<package.json version>` (checked by `release.yml`).
+- The Windows installer must not duplicate `install-service.ps1`: the wizard only collects answers, writes `config.json`
+  if absent and calls the script (token via `FOUNDRY_PROXY_GITHUB_TOKEN`, never on a command line). Node.js stays outside the
+  code folder because the updater replaces that folder.
 - PowerShell scripts must run on Windows PowerShell 5.1 and stay PSScriptAnalyzer-clean.
 - `engines` says Node >= 18 but CI tests 20/22/24; avoid APIs newer than Node 20.

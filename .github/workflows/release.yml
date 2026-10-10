@@ -1,8 +1,11 @@
 # Publishes a GitHub release when a version tag (v1.2.3) is pushed:
 #   1. the tag must equal "v" + the version in package.json
 #   2. the unit tests must pass
-#   3. scripts/build-release.sh builds foundry-release-proxy-<version>.tar.gz (Linux), .zip (Windows) and SHA256SUMS
-#   4. the release is created with those three files; the auto-updater installs from them
+#   3. scripts/build-release.sh builds foundry-release-proxy-<version>.tar.gz (Linux), .zip (Windows) and SHA256SUMS;
+#      they go into a DRAFT release (the auto-updater ignores drafts)
+#   4. a Windows runner builds FoundryReleaseProxy-Setup-<version>.exe (Inno Setup), installs and uninstalls it as a
+#      smoke test, and adds it and its .sha256 to the draft
+#   5. only then the draft is published, so a failed installer build never leaves a half release behind
 # Release steps are in the README ("Releases").
 
 name: Release
@@ -18,12 +21,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish
+  build:
+    name: Build archives
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # create the release and upload its assets
+      contents: write # create the draft release and upload its assets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,9 +58,60 @@ jobs:
       - name: Build archives
         run: ./scripts/build-release.sh dist
 
-      - name: Publish release
+      - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag --draft
+
+  installer:
+    name: Windows installer
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # add the installer to the draft release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Inno Setup (if the runner image lacks it)
+        shell: pwsh
+        run: |
+          $found = (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -or
+            (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") -or (Test-Path "$env:ProgramFiles\Inno Setup 6\ISCC.exe")
+          if (-not $found) { choco install innosetup -y --no-progress }
+
+      - name: Build the installer
+        shell: powershell
+        run: .\packaging\windows\build-installer.ps1 -OutDir dist
+
+      - name: Install, check and uninstall it
+        shell: powershell
+        run: .\packaging\windows\smoke-test.ps1 -Installer (Get-ChildItem dist\*.exe).FullName
+
+      - name: Add it to the draft release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $files = Get-ChildItem dist\FoundryReleaseProxy-Setup-*.exe, dist\FoundryReleaseProxy-Setup-*.exe.sha256 | ForEach-Object { $_.FullName }
+          gh release upload $env:TAG @files --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+  publish:
+    name: Publish release
+    needs: [build, installer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # publish the draft
+    steps:
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

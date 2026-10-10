@@ -58,15 +58,30 @@ updater; no network needed).
 then on the Pi `sudo nano /etc/foundry-release-proxy/env`, replace `GITHUB_TOKEN`, and
 `sudo systemctl restart foundry-release-proxy`. Delete the old token on GitHub afterwards.
 
-## 2. Install on the Pi
-
-Needs Node.js 18+ installed system-wide (`node -v`; not via nvm in a home directory, as the service runs as its own user).
+## 2. Install on the Pi (Linux)
 
 ```bash
 git clone https://github.com/dxcufgb/foundryvtt-realese-proxy.git
 cd foundryvtt-realese-proxy
-sudo ./scripts/install-service.sh
+sudo ./install.sh
 ```
+
+(or unpack `foundry-release-proxy-<version>.tar.gz` from the
+[releases](https://github.com/dxcufgb/FoundryVTT-Realese-proxy/releases) page and run the same `./install.sh`).
+
+`install.sh` is the whole installer: it looks for a usable Node.js (18 or newer, system-wide, not nvm in a home
+directory, because the service runs as its own user). If there is none it offers to download the official Node.js 22
+for your CPU from nodejs.org (checked against nodejs.org's SHA-256, unpacked to `/opt/foundry-release-proxy-node`;
+`--install-node` does it without asking, `--no-install-node` never). Then it runs `scripts/install-service.sh`, which
+asks for the token and sets up the service. Unattended, with everything on the command line:
+
+```bash
+sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN env FOUNDRY_PROXY_GITHUB_TOKEN=github_pat_... \
+  ./install.sh --install-node --auto-update --module transformations=dxcufgb/FoundryVTT-ghpg-Transformations
+```
+
+(`--module ID=OWNER/REPO` can be repeated and only applies to a first install; the token travels in the environment, not
+as an argument. Without `--module` the example config is installed and you edit it afterwards.)
 
 The script creates a `foundry-proxy` system user and installs:
 
@@ -83,12 +98,12 @@ Instead of cloning you can unpack a release archive (`foundry-release-proxy-<ver
 `gh release download --repo dxcufgb/FoundryVTT-Realese-proxy --pattern '*.tar.gz'`) and run the same script from it.
 
 At the end the script asks whether to turn on [automatic updates](#automatic-updates) (default: no).
-`sudo ./scripts/install-service.sh --auto-update` turns them on without asking.
+`sudo ./install.sh --auto-update` turns them on without asking.
 
-**Updating the proxy**: `git pull && sudo ./scripts/install-service.sh` (config, env and the auto-update choice are
+**Updating the proxy**: `git pull && sudo ./install.sh` (config, env and the auto-update choice are
 kept), or `sudo ./scripts/install-service.sh --update-now` to install the latest release.
-**Removing**: `sudo ./scripts/install-service.sh --uninstall` (removes the service, the updater timer, the updater
-token and the code; keeps `/etc/foundry-release-proxy/config.json` and `env`).
+**Removing**: `sudo ./install.sh --uninstall` (removes the service, the updater timer, the updater
+token, the code and a Node.js that `install.sh` downloaded; keeps `/etc/foundry-release-proxy/config.json` and `env`).
 
 ### Check that it runs
 
@@ -103,16 +118,42 @@ Use the tag of a real release in the second command. Day to day: `sudo systemctl
 
 ## 2b. Install on Windows
 
-Needs Node.js **20.6 or newer** installed for all users (the normal installer puts it in `C:\Program Files\nodejs`;
-not nvm in a user profile, because the proxy runs as `LOCAL SERVICE`). Download
-`foundry-release-proxy-<version>.zip` from the [releases](https://github.com/dxcufgb/FoundryVTT-Realese-proxy/releases)
-page, unpack it, and in an **elevated** Windows PowerShell (Run as administrator) in the unpacked folder:
+**With the installer (recommended).** Download `FoundryReleaseProxy-Setup-<version>.exe` from the
+[releases](https://github.com/dxcufgb/FoundryVTT-Realese-proxy/releases) page and run it (it asks for administrator
+rights). Nothing else has to be installed: it brings its own Node.js. The wizard asks for
+
+1. the GitHub token (hidden), the id of your first module (e.g. `transformations`) and its repository (`owner/name`),
+2. whether to turn on [automatic updates](#automatic-updates),
+
+and then installs the code, writes `config.json`, creates the data folder with locked-down permissions and registers
+the scheduled task that runs the proxy at boot, as described below. If a token and config already exist (installing a
+newer version over an old one) it does not ask again and keeps them. The installer is not code-signed, so Windows
+SmartScreen may say "Windows protected your PC": choose *More info → Run anyway*. Check the download against the
+`.sha256` file on the release page if you like (`Get-FileHash`).
+
+Unattended install (PowerShell, as administrator; the token goes through the environment, not the command line):
+
+```powershell
+$env:FOUNDRY_PROXY_GITHUB_TOKEN = 'github_pat_...'
+.\FoundryReleaseProxy-Setup-1.1.0.exe /VERYSILENT /SUPPRESSMSGBOXES /MODULEID=transformations /REPO=dxcufgb/FoundryVTT-ghpg-Transformations /AUTOUPDATE=1
+```
+
+Uninstall from *Settings → Apps*, or `unins000.exe /VERYSILENT` in `C:\Program Files\FoundryReleaseProxy`. It removes
+the tasks, the code and the bundled Node.js and asks whether to delete `C:\ProgramData\FoundryReleaseProxy` (config,
+token, logs; a silent uninstall keeps it unless you add `/DELETEDATA=1`). If the install fails, the reason is in
+`C:\Program Files\FoundryReleaseProxy\install.log`. The bundled Node.js is not updated by the automatic updates; install
+a newer installer to get a newer Node.js.
+
+**Without the installer (PowerShell).** Needs Node.js **20.6 or newer** installed for all users (the normal installer
+puts it in `C:\Program Files\nodejs`; not nvm in a user profile, because the proxy runs as `LOCAL SERVICE`). Download
+`foundry-release-proxy-<version>.zip` from the releases page, unpack it, and in an **elevated** Windows PowerShell
+(Run as administrator) in the unpacked folder:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-service.ps1
 ```
 
-It installs:
+Either way this is what ends up on the machine:
 
 - `C:\Program Files\FoundryReleaseProxy\`: the code (replaced each run)
 - `C:\ProgramData\FoundryReleaseProxy\config.json`: your module mapping (never overwritten)
@@ -251,10 +292,19 @@ downtime). The previous version stays in the `.prev` folder until the next updat
    `scripts/build-release.sh`, and publishes the GitHub release with those three files. Installs with automatic
    updates pick it up within a day.
 
-Build the same archives locally with `./scripts/build-release.sh dist` (needs `tar`, `zip`, `sha256sum`).
+Besides the archives, the workflow builds `FoundryReleaseProxy-Setup-<version>.exe` on a Windows runner
+(`packaging/windows/`: Inno Setup script, `build-installer.ps1`, and `smoke-test.ps1`, which installs and uninstalls the
+exe silently and checks that the proxy answers), and only publishes the release once that worked. The exe and its
+`.sha256` are extra assets; the auto-updater keeps using the archives and `SHA256SUMS`.
+
+Build the same archives locally with `./scripts/build-release.sh dist` (needs `tar`, `zip`, `sha256sum`) and the Windows
+installer with `.\packaging\windows\build-installer.ps1` (needs Inno Setup 6.3+, e.g. `choco install innosetup`).
+CI also runs `install.sh` on an Ubuntu runner and the Windows installer on a Windows runner for every push.
 
 ## Troubleshooting
 
+- Windows installer says the setup failed: read `C:\Program Files\FoundryReleaseProxy\install.log`; the proxy's own log is
+  `C:\ProgramData\FoundryReleaseProxy\logs\proxy.log`.
 - Service won't start: `journalctl -u foundry-release-proxy -n 50`; it prints `refusing to start: ...` for a missing
   token or malformed config.
 - `404` for a module that exists: the repo has no published (non-draft, non-prerelease) release, the release lacks the

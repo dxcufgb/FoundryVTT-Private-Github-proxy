@@ -7,7 +7,7 @@
 #   OUT_DIR/foundry-release-proxy-<version>.zip      for Windows
 #   OUT_DIR/SHA256SUMS                               sha256sum of both (checked by the auto-updater)
 #
-# Both archives hold one folder, foundry-release-proxy-<version>/, with src/, scripts/, package.json, the README
+# Both archives hold one folder, foundry-release-proxy-<version>/, with src/, scripts/, install.sh, package.json, the README
 # and the example config files. Needs tar, zip and sha256sum (all present on GitHub's Ubuntu runners).
 set -euo pipefail
 
@@ -23,9 +23,9 @@ NAME="foundry-release-proxy-${VERSION}"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 mkdir "$stage/$NAME"
-cp -r "$ROOT/src" "$ROOT/scripts" "$ROOT/package.json" "$ROOT/README.md" \
+cp -r "$ROOT/src" "$ROOT/scripts" "$ROOT/install.sh" "$ROOT/package.json" "$ROOT/README.md" \
     "$ROOT/config.example.json" "$ROOT/.env.example" "$stage/$NAME/"
-chmod 755 "$stage/$NAME"/scripts/*.sh
+chmod 755 "$stage/$NAME"/install.sh "$stage/$NAME"/scripts/*.sh
 
 rm -f "$OUT/$NAME.tar.gz" "$OUT/$NAME.zip" "$OUT/SHA256SUMS"
 tar -C "$stage" --owner=0 --group=0 --numeric-owner --sort=name -czf "$OUT/$NAME.tar.gz" "$NAME"

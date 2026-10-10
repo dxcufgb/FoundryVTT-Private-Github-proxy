@@ -224,8 +224,8 @@ var
 begin
   if FileExists(ConfigFile) or not WantsModule then Exit;
   ForceDirectories(DataDir);
-  Json := '{' + #13#10 + '  "' + Trim(SettingsPage.Values[1]) + '": { "repo": "' + Trim(SettingsPage.Values[2]) + '" }' +
-    #13#10 + '}' + #13#10;
+  // (No line may start with #: the preprocessor would take it for a directive.)
+  Json := '{' + #13#10 + '  "' + Trim(SettingsPage.Values[1]) + '": { "repo": "' + Trim(SettingsPage.Values[2]) + '" }' + #13#10 + '}' + #13#10;
   // Both values were checked above, so they contain no characters that need escaping.
   SaveStringToFile(ConfigFile, AnsiString(Json), False);
 end;

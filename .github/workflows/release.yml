@@ -1,0 +1,63 @@
+# Publishes a GitHub release when a version tag (v1.2.3) is pushed:
+#   1. the tag must equal "v" + the version in package.json
+#   2. the unit tests must pass
+#   3. scripts/build-release.sh builds foundry-release-proxy-<version>.tar.gz (Linux), .zip (Windows) and SHA256SUMS
+#   4. the release is created with those three files; the auto-updater installs from them
+# Release steps are in the README ("Releases").
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release and upload its assets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Tag matches package.json
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          if [[ "$TAG" != "v$version" ]]; then
+            echo "::error::tag $TAG does not match package.json version $version (expected v$version)"
+            exit 1
+          fi
+
+      - name: Syntax check
+        run: |
+          node --check src/server.js
+          node --check src/updater.js
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build archives
+        run: ./scripts/build-release.sh dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag

@@ -5,7 +5,9 @@
 #
 #   OUT_DIR/foundry-release-proxy-<version>.tar.gz   for Linux
 #   OUT_DIR/foundry-release-proxy-<version>.zip      for Windows
-#   OUT_DIR/SHA256SUMS                               sha256sum of both (checked by the auto-updater)
+#   OUT_DIR/foundry-release-proxy-linux.tar.gz       the same files under a fixed name, so that
+#   OUT_DIR/foundry-release-proxy-windows.zip        .../releases/latest/download/<name> always points at the newest release
+#   OUT_DIR/SHA256SUMS                               sha256sum of all four (the auto-updater checks the versioned names)
 #
 # Both archives hold one folder, foundry-release-proxy-<version>/, with src/, scripts/, install.sh, package.json, the README
 # and the example config files. Needs tar, zip and sha256sum (all present on GitHub's Ubuntu runners).
@@ -27,8 +29,12 @@ cp -r "$ROOT/src" "$ROOT/scripts" "$ROOT/install.sh" "$ROOT/package.json" "$ROOT
     "$ROOT/config.example.json" "$ROOT/.env.example" "$stage/$NAME/"
 chmod 755 "$stage/$NAME"/install.sh "$stage/$NAME"/scripts/*.sh
 
-rm -f "$OUT/$NAME.tar.gz" "$OUT/$NAME.zip" "$OUT/SHA256SUMS"
+LINUX="foundry-release-proxy-linux.tar.gz"
+WINDOWS="foundry-release-proxy-windows.zip"
+rm -f "$OUT/$NAME.tar.gz" "$OUT/$NAME.zip" "$OUT/$LINUX" "$OUT/$WINDOWS" "$OUT/SHA256SUMS"
 tar -C "$stage" --owner=0 --group=0 --numeric-owner --sort=name -czf "$OUT/$NAME.tar.gz" "$NAME"
 (cd "$stage" && zip -qrX "$OUT/$NAME.zip" "$NAME")
-(cd "$OUT" && sha256sum "$NAME.tar.gz" "$NAME.zip" > SHA256SUMS)
-echo "Built $OUT/$NAME.tar.gz, $OUT/$NAME.zip and $OUT/SHA256SUMS"
+cp "$OUT/$NAME.tar.gz" "$OUT/$LINUX"
+cp "$OUT/$NAME.zip" "$OUT/$WINDOWS"
+(cd "$OUT" && sha256sum "$NAME.tar.gz" "$NAME.zip" "$LINUX" "$WINDOWS" > SHA256SUMS)
+echo "Built $OUT/$NAME.tar.gz, $OUT/$NAME.zip, $OUT/$LINUX, $OUT/$WINDOWS and $OUT/SHA256SUMS"

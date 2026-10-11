@@ -19,7 +19,7 @@ const {
 } = require('../src/updater.js');
 
 const API = 'https://api.github.com';
-const REPO = 'dxcufgb/FoundryVTT-Realese-proxy';
+const REPO = 'dxcufgb/FoundryVTT-Private-Github-proxy';
 const LATEST = `${API}/repos/${REPO}/releases/latest`;
 const TOKEN = 'updater-token-secret';
 
@@ -226,6 +226,15 @@ test('download: missing SHA256SUMS entry, non-HTTPS redirect, oversized body and
   {
     const rel = release('v1.1.0');
     rel.assets[2].url = 'https://evil.example/steal';
+    const f = mockFetch({});
+    const u = createUpdater({ token: TOKEN, fetchImpl: f, log: () => {} });
+    await assert.rejects(u.download(rel, 'tar.gz', dir), /unexpected asset URL/);
+    assert.equal(f.calls.length, 0);
+  }
+  {
+    // Asset URLs must be under the repo's current name; the pre-rename name is refused, not followed.
+    const rel = release('v1.1.0');
+    rel.assets[2].url = `${API}/repos/dxcufgb/FoundryVTT-Realese-proxy/releases/assets/102`;
     const f = mockFetch({});
     const u = createUpdater({ token: TOKEN, fetchImpl: f, log: () => {} });
     await assert.rejects(u.download(rel, 'tar.gz', dir), /unexpected asset URL/);

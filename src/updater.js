@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const REPO = 'dxcufgb/FoundryVTT-Realese-proxy';
+const REPO = 'dxcufgb/FoundryVTT-Private-Github-proxy';
 const GITHUB_API = 'https://api.github.com';
 const PACKAGE = 'foundry-release-proxy';
 const API_TIMEOUT_MS = 20000;

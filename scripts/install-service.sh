@@ -36,7 +36,7 @@ UPDATE_UNIT="/etc/systemd/system/${SERVICE_NAME}-update.service"
 UPDATE_TIMER="/etc/systemd/system/${SERVICE_NAME}-update.timer"
 AUTO_CONF="$CONF_DIR/auto-update.conf"
 UPDATER_TOKEN_FILE="$CONF_DIR/updater-token"
-UPDATE_REPO="dxcufgb/FoundryVTT-Realese-proxy"
+UPDATE_REPO="dxcufgb/FoundryVTT-Private-Github-proxy"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Print command usage to stderr and exit with status 2.

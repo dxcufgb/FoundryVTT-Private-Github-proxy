@@ -61,13 +61,13 @@ then on the Pi `sudo nano /etc/foundry-release-proxy/env`, replace `GITHUB_TOKEN
 ## 2. Install on the Pi (Linux)
 
 ```bash
-git clone https://github.com/dxcufgb/foundryvtt-realese-proxy.git
-cd foundryvtt-realese-proxy
+git clone https://github.com/dxcufgb/foundryvtt-private-github-proxy.git
+cd foundryvtt-private-github-proxy
 sudo ./install.sh
 ```
 
 (or unpack `foundry-release-proxy-<version>.tar.gz` from the
-[releases](https://github.com/dxcufgb/FoundryVTT-Realese-proxy/releases) page and run the same `./install.sh`).
+[releases](https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases) page and run the same `./install.sh`).
 
 `install.sh` is the whole installer: it looks for a usable Node.js (18 or newer, system-wide, not nvm in a home
 directory, because the service runs as its own user). If there is none it offers to download the official Node.js 22
@@ -94,8 +94,8 @@ It asks for the token (input hidden); press Enter to skip and paste it into the 
 started once a token is present. Then edit `/etc/foundry-release-proxy/config.json` if needed and restart.
 
 Instead of cloning you can unpack a release archive (`foundry-release-proxy-<version>.tar.gz` from the
-[releases](https://github.com/dxcufgb/FoundryVTT-Realese-proxy/releases) page, e.g.
-`gh release download --repo dxcufgb/FoundryVTT-Realese-proxy --pattern '*.tar.gz'`) and run the same script from it.
+[releases](https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases) page, e.g.
+`gh release download --repo dxcufgb/FoundryVTT-Private-Github-proxy --pattern '*.tar.gz'`) and run the same script from it.
 
 At the end the script asks whether to turn on [automatic updates](#automatic-updates) (default: no).
 `sudo ./install.sh --auto-update` turns them on without asking.
@@ -119,7 +119,7 @@ Use the tag of a real release in the second command. Day to day: `sudo systemctl
 ## 2b. Install on Windows
 
 **With the installer (recommended).** Download `FoundryReleaseProxy-Setup-<version>.exe` from the
-[releases](https://github.com/dxcufgb/FoundryVTT-Realese-proxy/releases) page and run it (it asks for administrator
+[releases](https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases) page and run it (it asks for administrator
 rights). Nothing else has to be installed: it brings its own Node.js. The wizard asks for
 
 1. the GitHub token (hidden), the id of your first module (e.g. `transformations`) and its repository (`owner/name`),
@@ -252,7 +252,7 @@ The commands also work from the installed copy (`/opt/foundry-release-proxy/scri
 (`auto-update.conf` next to `env`; `--no-auto-update` / `-NoAutoUpdate` turn it off while re-installing).
 `--check` and `--update-now` work whether or not the daily updates are on.
 
-**What an update does**: `src/updater.js` asks `https://api.github.com/repos/dxcufgb/FoundryVTT-Realese-proxy/releases/latest`
+**What an update does**: `src/updater.js` asks `https://api.github.com/repos/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest`
 (drafts and pre-releases never count) and compares the tag with the installed `package.json` version by semantic
 versioning; only a strictly newer release is installed. It downloads `SHA256SUMS` and the archive
 (`.tar.gz` on Linux, `.zip` on Windows) through the API asset URL, follows GitHub's redirect to the pre-signed
@@ -267,7 +267,7 @@ log says `ROLLBACK FAILED` with the command to reinstall it by hand from the `.p
 **Token for the updater.** This repository is private, so the updater needs a GitHub token that can read its releases.
 When you turn updates on you can:
 
-- reuse the proxy's own `GITHUB_TOKEN` from `env` (the default): add `dxcufgb/FoundryVTT-Realese-proxy` to that
+- reuse the proxy's own `GITHUB_TOKEN` from `env` (the default): add `dxcufgb/FoundryVTT-Private-Github-proxy` to that
   token's **Repository access**, keeping **Contents: Read-only**. The proxy itself then can also see this repository,
   which is harmless (it only serves the repos listed in `config.json`); or
 - give the updater its own fine-grained token (only this repository, **Contents: Read-only**): answer `n` to the

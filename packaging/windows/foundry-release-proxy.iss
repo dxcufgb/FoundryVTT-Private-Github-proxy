@@ -187,7 +187,7 @@ begin
   begin
     I := Pos(',', S);
     Item := Trim(Copy(S, 1, I - 1));
-    Delete(S, 1, I);
+    S := Copy(S, I + 1, Length(S));
     if (Item <> '') and ((Pos('@', Item) < 2) or (Pos('.', Item) = 0) or (Pos(' ', Item) > 0)) then Result := False;
   end;
 end;

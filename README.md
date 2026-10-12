@@ -358,6 +358,25 @@ with `cd dist && sha256sum -c SHA256SUMS.txt`) and the Windows installer with
 `./scripts/build-release.sh --finish dist 9.9.9` adds the installer's copies and checksums.
 CI also runs `install.sh` on an Ubuntu runner and the Windows installer on a Windows runner for every push.
 
+## Development
+
+`npm test` runs the unit tests (no dependencies to install).
+
+The **Security** workflow (`.github/workflows/security.yml`; GitHub's secret scanning and CodeQL are not available for
+this private repository) runs on every pull request, on pushes to `main` and weekly: `Secrets (gitleaks)` scans the
+whole git history, `Code (Semgrep)` runs the Semgrep registry rules, `Dependencies` checks that the proxy still has no
+npm dependencies (nothing to audit). The same checks locally (gitleaks 8.30.1, semgrep 1.180.0):
+
+```sh
+gitleaks git --redact .
+semgrep scan --metrics=off --error --severity WARNING --severity ERROR \
+  --config p/python --config p/javascript --config p/security-audit \
+  --config p/secrets --config p/github-actions --config p/bash
+```
+
+Mark a false positive with `// nosemgrep: <rule-id>` and a reason (Semgrep) or a narrow, commented allowlist entry in
+`.gitleaks.toml` (gitleaks).
+
 ## Branch protection
 
 `main` is meant to be changed only through pull requests: squash merge only, one approval, the tests, shellcheck,

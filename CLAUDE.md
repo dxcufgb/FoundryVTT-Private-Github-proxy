@@ -55,6 +55,7 @@ installs new releases of the proxy itself.
   Node 20/22/24, `shellcheck install.sh scripts/*.sh`, PSScriptAnalyzer on `scripts/*.ps1` and `packaging/windows/*.ps1`, an
   `install.sh` run under systemd on the runner, and a silent install/uninstall of the Inno Setup exe on a Windows runner. Workflow changes are
   linted by actionlint and zizmor.
+- Security (`.github/workflows/security.yml`, required checks `Secrets (gitleaks)`, `Code (Semgrep)`, `Dependencies`; push to main, PRs, weekly): locally `gitleaks git --redact .`, `semgrep scan --metrics=off --error --severity WARNING --severity ERROR --config p/python --config p/javascript --config p/security-audit --config p/secrets --config p/github-actions --config p/bash`, and no npm dependencies, so nothing to audit (the job fails if `package.json` gains one). False positives: `// nosemgrep: <rule-id>` + reason, or `.gitleaks.toml`.
 
 ## Install on Linux and releasing
 - **Install on Linux**: `curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s foundry-release-proxy`

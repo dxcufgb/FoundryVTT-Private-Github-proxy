@@ -4,7 +4,9 @@ A tiny HTTP proxy that lets a self-hosted **Foundry VTT** server install and upd
 **private GitHub repositories**. Foundry cannot authenticate to GitHub, so the proxy holds a read-only token, serves
 the module manifest, and redirects the zip download to a short-lived GitHub URL (the zip never passes through the
 proxy). Node.js only, no npm dependencies. Runs as a systemd service on Linux (e.g. a Raspberry Pi) or as a
-scheduled task on Windows, and can optionally keep itself up to date from this repository's releases.
+scheduled task on Windows, and can optionally keep itself up to date from this repository's releases (and e-mail you
+when it did). A password-protected **administration page** (`/_admin/`) lists the modules, adds, edits and deletes them,
+copies a module's link for Foundry, and manages the notification e-mail addresses.
 
 ```
 Foundry ──manifest URL──▶ proxy ──token──▶ GitHub API (latest release, manifest asset)
@@ -17,6 +19,8 @@ Foundry ──download URL──▶ proxy ──302──▶ pre-signed GitHub U
 | `GET /<module-id>/module.json` | manifest of the **latest** release (`manifest` and `download` rewritten to the proxy) |
 | `GET /<module-id>/<tag>/module.json` | manifest of that tag, rewritten the same way |
 | `GET /<module-id>/<tag>/module.zip` | `302` to the pre-signed GitHub download of that tag's zip |
+| `/_admin/` and `/_admin/api/...` | the [administration page](#administration-page) (`404` while it has no password) |
+| `POST`/`PUT`/`DELETE` outside `/_admin/` | `405` (the proxy routes are `GET`/`HEAD` only) |
 | anything else / unknown module / missing asset or release | `404` |
 | GitHub error | `502` (log shows module id and GitHub status, never the token) |
 
@@ -34,14 +38,16 @@ the token cannot see that repo (GitHub hides private repos with 404), so check t
 ```
 
 Optional per-module overrides: `"manifestAsset"` (default `module.json`) and `"zipAsset"` (default `module.zip`).
-The file is validated at startup; a malformed one makes the proxy refuse to start with a clear message. It is read
-once at startup: add a module, restart the service.
+The file is validated at startup; a malformed one makes the proxy refuse to start with a clear message. Changes made
+on the administration page take effect at once (and are written back to the file); after editing the file by hand,
+restart the service. An empty `{}` is only accepted while the administration page is on.
 
 Environment variables (see `.env.example`): `GITHUB_TOKEN` (required), `PORT` (default `8787`), `HOST` (default
-`127.0.0.1`), `PUBLIC_BASE_URL` (default `http://localhost:<PORT>`), `CONFIG_FILE`.
+`127.0.0.1`), `PUBLIC_BASE_URL` (default `http://localhost:<PORT>`), `CONFIG_FILE`, `ADMIN_FILE` (default `admin.json`
+next to `CONFIG_FILE`), `ADMIN_HOSTS` (extra host names the admin page answers to, comma separated).
 
-Run locally: `GITHUB_TOKEN=... CONFIG_FILE=config.example.json node src/server.js`. Tests: `npm test` (proxy and
-updater; no network needed).
+Run locally: `GITHUB_TOKEN=... CONFIG_FILE=config.example.json node src/server.js`. Tests: `npm test` (proxy, admin
+page, mailer and updater; no network needed).
 
 ## 1. Create the GitHub token
 
@@ -86,8 +92,9 @@ sudo ./install.sh
 | `--help` | usage listing exactly these first, then the repo-specific options |
 
 Options of this installer: `--module ID=OWNER/REPO` (first install: put this module in `config.json`; repeatable),
-`--install-node` / `--no-install-node` (download Node.js without asking / never), and the older name `--check` (=
-`--check-update`). Tokens are never taken as arguments: the proxy's token comes from a hidden prompt or
+`--install-node` / `--no-install-node` (download Node.js without asking / never), `--set-admin-password` and
+`--set-notify` (see [administration page](#administration-page)), and the older name `--check` (= `--check-update`).
+A first install also asks for the admin page password and the notification e-mails (Enter skips both). Tokens are never taken as arguments: the proxy's token comes from a hidden prompt or
 `FOUNDRY_PROXY_GITHUB_TOKEN`, the updater's from `UPDATER_GITHUB_TOKEN` or `INSTALL_GITHUB_TOKEN` (see
 [automatic updates](#automatic-updates)). With `--yes`, a first install needs `FOUNDRY_PROXY_GITHUB_TOKEN`, and Node.js is
 downloaded if none is usable.
@@ -142,6 +149,8 @@ rights). Nothing else has to be installed: it brings its own Node.js. The wizard
 
 1. the GitHub token (hidden), the id of your first module (e.g. `transformations`) and its repository (`owner/name`),
 2. whether to turn on [automatic updates](#automatic-updates),
+3. optionally a password for the [administration page](#administration-page) and the e-mail addresses (plus mail
+   server) for [update notifications](#update-notifications-by-e-mail),
 
 and then installs the code, writes `config.json`, creates the data folder with locked-down permissions and registers
 the scheduled task that runs the proxy at boot, as described below. If a token and config already exist (installing a
@@ -233,6 +242,9 @@ the proxy's redirect. Updates then appear like any other module's: Foundry re-fe
 
 ## Adding another private module
 
+The easy way is the [administration page](#administration-page): **Add module**, enter the module id and `owner/name`,
+then **Copy link** and paste it into Foundry (steps 2 and 3 below still apply). By hand:
+
 1. Add an entry to `/etc/foundry-release-proxy/config.json`:
    ```json
    {
@@ -248,6 +260,64 @@ the proxy's redirect. Updates then appear like any other module's: Foundry re-fe
    assets are named differently, set `manifestAsset` / `zipAsset` in the config entry.)
 4. `sudo systemctl restart foundry-release-proxy` (check `journalctl -u foundry-release-proxy` for config errors).
 5. In Foundry install it with its own manifest URL: `http://localhost:8787/other-module/module.json`.
+
+## Administration page
+
+`http://localhost:8787/_admin/` (your `PUBLIC_BASE_URL` + `/_admin/`). It is **off until it has a password**; the
+installers ask for one on a first install (Enter = keep it off). Set or change it later with
+`sudo ./install.sh --set-admin-password` (Windows: `.\scripts\install-service.ps1 -SetAdminPassword`) or on the page
+itself. Non-interactive installs take it from `FOUNDRY_PROXY_ADMIN_PASSWORD` (never from the command line).
+
+What it does:
+
+- **Modules**: lists every module with its repository, release asset names and the link for Foundry. **Add module**,
+  **Edit** (the id can be renamed: its link changes), **Delete**, **Check release** (shows the latest release tag, or
+  why there is none: no release, or the token cannot see the repository) and **Copy link** (the manifest URL to paste
+  into Foundry's *Install Module*). Changes are checked with the same rules as `config.json`, written to it and used
+  at once, without a restart. Remember to add a new repository to the token's repository access as well.
+- **Update notifications**: the e-mail addresses that hear about automatic updates (see below), the SMTP server that
+  sends them, and **Send test e-mail**. The SMTP password is never shown again; leave the field empty to keep it.
+- **Admin password**: change it (needs the current one; every other session is logged out).
+
+**Access.** Like the proxy itself the page listens on `127.0.0.1` only. From another computer use an SSH tunnel:
+`ssh -L 8787:localhost:8787 pi@raspberrypi`, then open `http://localhost:8787/_admin/` there. Do not open the port to
+the network or the internet; if you put the proxy behind an HTTPS reverse proxy, set `PUBLIC_BASE_URL` to its `https://`
+address (the session cookie is then marked `Secure`) and list its host name in `ADMIN_HOSTS` if it differs.
+
+**Security.** The password is stored as a salted scrypt hash. A login gives an `HttpOnly`, `SameSite=Strict` session
+cookie (12 hours, in memory: restarting the proxy logs everybody out); every change also needs a per-session CSRF token
+and a JSON body, and requests from other web sites (`Origin`) or for unknown host names (DNS rebinding) are refused.
+Five wrong passwords lock that address out for five minutes. The page has a strict Content-Security-Policy and is never
+cached. The GitHub token is never shown on it.
+
+**Settings file.** `admin.json` next to `config.json` (`/etc/foundry-release-proxy/admin.json`,
+`C:\ProgramData\FoundryReleaseProxy\admin.json`) holds the password hash and the notification settings, including the
+SMTP password. Like `env` it is readable only by the proxy's account (Linux: owned by `foundry-proxy`, mode `600`;
+Windows: Administrators, SYSTEM and LOCAL SERVICE). The proxy's account may rewrite `config.json` and `admin.json` in
+place, but cannot create or delete files in the settings folder; on Linux the systemd unit allows writes to exactly
+these two files. Re-running the installer never overwrites `admin.json`; `--set-notify` (`-SetNotify`) re-enters the
+e-mail settings from the command line.
+
+## Update notifications by e-mail
+
+When automatic updates are on, every run that **installs a new version** or **fails** (check failed, bad download,
+rolled back) sends an e-mail to each address in `admin.json`: subject `Foundry release proxy (<host name>): updated to
+X.Y.Z` or `...: automatic update failed`, with the details in the body. No addresses = no e-mails. A failure to send is
+only logged and never changes the outcome of the update. (A failing check e-mails you every day until it is fixed.)
+
+Set the addresses and the mail server while installing (the installer asks after the admin password; the Windows
+installer has a page for it), on the administration page, or with `--set-notify` / `-SetNotify`. Unattended installs
+read `FOUNDRY_PROXY_NOTIFY_EMAILS` (comma separated), `FOUNDRY_PROXY_SMTP_HOST`, `FOUNDRY_PROXY_SMTP_PORT`,
+`FOUNDRY_PROXY_SMTP_SECURITY` (`starttls`, `tls` or `none`), `FOUNDRY_PROXY_SMTP_USER`, `FOUNDRY_PROXY_SMTP_PASSWORD`
+and `FOUNDRY_PROXY_SMTP_FROM` (the Windows setup also takes `/NOTIFYEMAILS=`, `/SMTPHOST=`, `/SMTPPORT=`,
+`/SMTPSECURITY=`, `/SMTPUSER=` and `/SMTPFROM=`; the password only from the environment).
+
+The mail is sent by `src/notify.js` with a small built-in SMTP client: `starttls` (port 587) or `tls` (port 465) with a
+verified certificate; the password goes out only over TLS (`AUTH PLAIN`/`LOGIN`), so `none` is only for a local relay
+without login. For Gmail use `smtp.gmail.com`, port 587, `starttls` and an *app password*. On Linux the root updater
+runs `notify.js` as the proxy's own user (`setpriv`), so root never parses the file that user can write; on Windows the
+SYSTEM updater runs it. The first update **to** this version is still done by the previous version's updater, so
+e-mails start with the update after that.
 
 ## Automatic updates
 
@@ -381,5 +451,9 @@ by convention: open a pull request, wait for CI, squash merge.
 - `404` for a module that exists: the repo has no published (non-draft, non-prerelease) release, the release lacks the
   assets, or the token has no access to that repo.
 - `502`: GitHub rejected the request; the log line shows the module id and status (`401` expired/invalid token).
+- `/_admin/` answers `404`: the page has no password yet (`--set-admin-password`). `403 unknown host name`: open it
+  as `localhost` / `127.0.0.1` or the host of `PUBLIC_BASE_URL`, or add the name to `ADMIN_HOSTS` in `env`.
+- No notification e-mails: use **Send test e-mail** on the admin page; its error names the SMTP step that failed.
+  The update log (`journalctl -u foundry-release-proxy-update`, `auto-update.log`) shows `notify: ...` lines.
 - Automatic update fails with `HTTP 404`: the updater's token cannot see this repository (add it to the token's
   repository access) or no release has been published yet.

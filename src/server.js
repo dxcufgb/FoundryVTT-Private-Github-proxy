@@ -4,6 +4,8 @@
 
 const http = require('node:http');
 const fs = require('node:fs');
+const path = require('node:path');
+const { createAdmin, loadAdminSettings, rewriteFile, SettingsError } = require('./admin.js');
 
 const GITHUB_API = 'https://api.github.com';
 const TIMEOUT_MS = 20000;
@@ -25,7 +27,8 @@ class GithubError extends Error {
 // Raised for "not found" results that become a 404.
 class NotFound extends Error {}
 
-function parseConfig(text, source = 'config') {
+// allowEmpty: an empty mapping is fine (the admin page can add modules to it).
+function parseConfig(text, source = 'config', { allowEmpty = false } = {}) {
   let raw;
   try {
     raw = JSON.parse(text);
@@ -37,7 +40,7 @@ function parseConfig(text, source = 'config') {
   }
   const modules = Object.create(null);
   const ids = Object.keys(raw);
-  if (ids.length === 0) throw new ConfigError(`${source}: no modules configured`);
+  if (ids.length === 0 && !allowEmpty) throw new ConfigError(`${source}: no modules configured`);
   for (const id of ids) {
     const entry = raw[id];
     if (!MODULE_ID_RE.test(id)) {
@@ -66,17 +69,19 @@ function parseConfig(text, source = 'config') {
   return modules;
 }
 
-function loadConfig(file) {
+function loadConfig(file, options) {
   let text;
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch (err) {
     throw new ConfigError(`cannot read config file ${file}: ${err.message}`);
   }
-  return parseConfig(text, file);
+  return parseConfig(text, file, options);
 }
 
-function createApp({ modules, token, publicBaseUrl, fetchImpl = fetch, log = console.log }) {
+// admin: { file, settings, hosts } turns on the /_admin page (when settings has a password hash); its module changes
+// are written to configFile.
+function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl = fetch, log = console.log, mailer }) {
   const base = publicBaseUrl.replace(/\/+$/, '');
 
   const apiHeaders = (accept) => ({
@@ -143,13 +148,57 @@ function createApp({ modules, token, publicBaseUrl, fetchImpl = fetch, log = con
     return manifest;
   }
 
+  // What the admin page shows for "Check release".
+  async function checkRelease(cfg) {
+    try {
+      const release = await getRelease(cfg.repo);
+      const names = (release.assets || []).map((a) => a.name);
+      return {
+        tag: release.tag_name,
+        published: release.published_at || null,
+        url: release.html_url || null,
+        missing: [cfg.manifestAsset, cfg.zipAsset].filter((n) => !names.includes(n)),
+      };
+    } catch (err) {
+      if (err instanceof NotFound) return { error: 'no release found, or the token cannot see this repository' };
+      if (err instanceof GithubError) {
+        log(`admin: release check for ${cfg.repo} failed status=${err.status} (${err.message})`);
+        return { error: 'GitHub request failed' };
+      }
+      throw err;
+    }
+  }
+
+  const adminPage = admin && createAdmin({
+    adminFile: admin.file,
+    settings: admin.settings,
+    extraHosts: admin.hosts,
+    publicBaseUrl,
+    log,
+    mailer,
+    getModules: () => modules,
+    validateModules: (raw) => parseConfig(JSON.stringify(raw), 'admin', { allowEmpty: true }),
+    saveModules: (parsed, raw) => {
+      rewriteFile(configFile, `${JSON.stringify(raw, null, 2)}\n`);
+      modules = parsed;
+    },
+    checkRelease,
+  });
+
   async function route(req, res) {
+    let pathname;
+    try {
+      pathname = new URL(req.url, 'http://proxy').pathname;
+    } catch {
+      return send(res, 404, 'not found');
+    }
+    if (adminPage && adminPage.handles(pathname)) return adminPage.handle(req, res, pathname);
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       return send(res, 405, 'method not allowed', { Allow: 'GET, HEAD' });
     }
     let segments;
     try {
-      segments = new URL(req.url, 'http://proxy').pathname.slice(1).split('/').map(decodeURIComponent);
+      segments = pathname.slice(1).split('/').map(decodeURIComponent);
     } catch {
       return send(res, 404, 'not found');
     }
@@ -217,10 +266,25 @@ function main(env = process.env) {
       throw new ConfigError(`invalid PUBLIC_BASE_URL "${publicBaseUrl}"`);
     }
     const configFile = env.CONFIG_FILE || './config.json';
-    const modules = loadConfig(configFile);
-    const server = createApp({ modules, token, publicBaseUrl });
+    // admin.json next to config.json unless ADMIN_FILE says otherwise; without a password hash the page is off.
+    const adminFile = env.ADMIN_FILE || path.join(path.dirname(configFile), 'admin.json');
+    let adminSettings;
+    try {
+      adminSettings = loadAdminSettings(adminFile);
+    } catch (err) {
+      if (err instanceof SettingsError) throw new ConfigError(err.message);
+      throw err;
+    }
+    const adminOn = Boolean(adminSettings.passwordHash);
+    const modules = loadConfig(configFile, { allowEmpty: adminOn });
+    const hosts = (env.ADMIN_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean);
+    if (host !== '0.0.0.0' && host !== '::') hosts.push(host);
+    const admin = adminOn ? { file: adminFile, settings: adminSettings, hosts } : undefined;
+    const server = createApp({ modules, token, publicBaseUrl, configFile, admin });
     server.listen(port, host, () => {
-      console.log(`listening on http://${host}:${port}, modules: ${Object.keys(modules).join(', ')}`);
+      const ids = Object.keys(modules).join(', ') || '(none yet)';
+      console.log(`listening on http://${host}:${port}, modules: ${ids}`);
+      console.log(adminOn ? `admin page: ${publicBaseUrl.replace(/\/+$/, '')}/_admin/` : `admin page off (no password in ${adminFile})`);
     });
     return server;
   } catch (err) {

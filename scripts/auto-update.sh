@@ -11,9 +11,13 @@
 # The release lookup, version comparison, download and checksum check are in src/updater.js; this script only
 # locks, extracts, backs up, installs and rolls back. config.json and env are never touched (the installer keeps
 # them). The GitHub token is read from the file named in auto-update.conf and never printed.
+#
+# --apply e-mails the recipients in admin.json (installer or admin page) when it installed a new version or failed;
+# src/notify.js does that as the proxy's own user (setpriv), so root never parses the file that user can write.
 set -euo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-foundry-release-proxy}"
+SERVICE_USER="${SERVICE_USER:-foundry-proxy}"
 APP_DIR="${APP_DIR:-/opt/${SERVICE_NAME}}"
 CONF_DIR="${CONF_DIR:-/etc/${SERVICE_NAME}}"
 BACKUP_DIR="${APP_DIR}.prev"
@@ -24,6 +28,24 @@ AUTO_CONF="$CONF_DIR/auto-update.conf"
 log() { echo "auto-update: $*"; }
 # Write the supplied error to stderr and exit with status 1.
 fail() { echo "auto-update: ERROR: $*" >&2; exit 1; }
+
+# E-mail subject $1 / text $2 to the notification recipients, as the service user. Never fails the update.
+notify() {
+    local script="$APP_DIR/src/notify.js"
+    [[ -f "$script" && -f "$CONF_DIR/admin.json" && -r "$CONF_DIR/env" ]] || return 0
+    if ! command -v setpriv >/dev/null 2>&1 || ! id "$SERVICE_USER" >/dev/null 2>&1; then
+        log "cannot switch to $SERVICE_USER (setpriv); no notification e-mail"
+        return 0
+    fi
+    setpriv --reuid="$SERVICE_USER" --regid="$SERVICE_USER" --init-groups \
+        "$NODE_BIN" "$script" --proxy-env "$CONF_DIR/env" --subject "$1" --message "$2" 2>&1 |
+        sed 's/^/auto-update: /' || true
+}
+# --apply only: report the failure $* by e-mail, then fail.
+apply_fail() {
+    notify "automatic update failed" "The automatic update of the Foundry release proxy failed: $*"
+    fail "$*"
+}
 
 mode="${1:-}"
 [[ "$mode" == "--check" || "$mode" == "--apply" ]] || fail "usage: $0 --check|--apply"
@@ -72,23 +94,23 @@ printf '%s\n' "$out" | grep -v -e '^ARCHIVE=' -e '^VERSION=' | sed 's/^/auto-upd
 case "$rc" in
     0) exit 0 ;;
     10) ;;
-    *) fail "update check failed (exit $rc); the installed version is unchanged" ;;
+    *) apply_fail "update check failed (exit $rc); the installed version is unchanged" ;;
 esac
 archive="$(printf '%s\n' "$out" | sed -n 's/^ARCHIVE=//p')"
 version="$(printf '%s\n' "$out" | sed -n 's/^VERSION=//p')"
-[[ -f "$archive" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "updater gave no archive"
+[[ -f "$archive" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || apply_fail "updater gave no archive"
 
 # Every entry must sit below foundry-release-proxy-<version>/ with no absolute paths or "..".
 top="foundry-release-proxy-${version}"
 while IFS= read -r entry; do
     if [[ "$entry" != "$top" && "$entry" != "$top/"* ]] || [[ "/$entry/" == *"/../"* ]]; then
-        fail "archive contains an unexpected path; refusing it"
+        apply_fail "archive contains an unexpected path; refusing it"
     fi
 done < <(tar -tzf "$archive")
 tar -xzf "$archive" -C "$work/extract" --no-same-owner --no-same-permissions
 new="$work/extract/$top"
-[[ -f "$new/scripts/install-service.sh" && -f "$new/src/server.js" ]] || fail "archive is missing the installer or server"
-grep -q "\"version\": *\"${version//./\\.}\"" "$new/package.json" || fail "archive package.json is not version $version"
+[[ -f "$new/scripts/install-service.sh" && -f "$new/src/server.js" ]] || apply_fail "archive is missing the installer or server"
+grep -q "\"version\": *\"${version//./\\.}\"" "$new/package.json" || apply_fail "archive package.json is not version $version"
 
 was_active=no
 systemctl is-active --quiet "$SERVICE_NAME" && was_active=yes
@@ -107,6 +129,7 @@ healthy() {
 }
 if bash "$new/scripts/install-service.sh" --upgrade && healthy; then
     log "updated $installed -> $version"
+    notify "updated to $version" "The Foundry release proxy updated itself from $installed to $version."
     exit 0
 fi
 
@@ -122,6 +145,6 @@ else
     if [[ "$was_active" == yes ]]; then systemctl restart "$SERVICE_NAME" || restored=no; fi
 fi
 if [[ "$restored" == yes ]] && healthy; then
-    fail "update to $version rolled back to $installed; see the log above"
+    apply_fail "update to $version rolled back to $installed; see the log above (journalctl -u ${SERVICE_NAME}-update)"
 fi
-fail "ROLLBACK FAILED: $installed could not be restored; reinstall it by hand from $BACKUP_DIR (sudo bash $BACKUP_DIR/scripts/install-service.sh --upgrade)"
+apply_fail "ROLLBACK FAILED: $installed could not be restored; reinstall it by hand from $BACKUP_DIR (sudo bash $BACKUP_DIR/scripts/install-service.sh --upgrade)"

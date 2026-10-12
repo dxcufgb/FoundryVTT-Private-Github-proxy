@@ -11,18 +11,24 @@
 #   sudo ./scripts/install-service.sh --update-now          # install the latest release now
 #   sudo ./scripts/install-service.sh --uninstall [--purge] # stop + remove service, updater and code (--purge: also config)
 #   sudo ./scripts/install-service.sh --module ID=OWNER/REPO  # first install: put this module in config.json (repeatable)
+#   sudo ./scripts/install-service.sh --set-admin-password  # (re)set the password of the administration page
+#   sudo ./scripts/install-service.sh --set-notify          # (re)enter the update-notification e-mail settings
 #
 # Layout (the config survives code updates; re-running this script never overwrites it):
 #   /opt/foundry-release-proxy/                   code (replaced on every run)
 #   /opt/foundry-release-proxy.prev/              previous code, kept by the updater for rollback
-#   /etc/foundry-release-proxy/config.json        module id -> repo mapping
+#   /etc/foundry-release-proxy/config.json        module id -> repo mapping (600, owned by the service user, which
+#                                                 rewrites it when modules are changed on the administration page)
+#   /etc/foundry-release-proxy/admin.json         admin page password hash + notification e-mail settings (600, owned
+#                                                 by the service user)
 #   /etc/foundry-release-proxy/env                GITHUB_TOKEN, PORT, ... (chmod 600, owned by the service user)
 #   /etc/foundry-release-proxy/auto-update.conf   auto-update on/off and which token it uses (root, 600)
 #   /etc/foundry-release-proxy/updater-token      only if the updater has its own token (root, 600)
 #
 # Automatic updates are off unless asked for. The tokens are taken from a prompt or from the environment
 # (FOUNDRY_PROXY_GITHUB_TOKEN for the proxy, UPDATER_GITHUB_TOKEN for the updater, INSTALL_GITHUB_TOKEN from the
-# one-line installer as a candidate updater token), never from the command line.
+# one-line installer as a candidate updater token), never from the command line. The same goes for the admin page
+# password (FOUNDRY_PROXY_ADMIN_PASSWORD) and the SMTP password (FOUNDRY_PROXY_SMTP_PASSWORD).
 #
 # Logs:    journalctl -u foundry-release-proxy -f      (updates: journalctl -u foundry-release-proxy-update)
 # Control: sudo systemctl {start|stop|restart|status} foundry-release-proxy
@@ -63,6 +69,8 @@ Options of this installer:
   --no-install-node        (install.sh) never download Node.js
   --check                  same as --check-update
   --upgrade                non-interactive re-install that keeps every setting (used by the updater)
+  --set-admin-password     (re)set the password of the administration page (http://localhost:8787/_admin/)
+  --set-notify             (re)enter the e-mail settings for update notifications (also editable on the admin page)
 
 Environment (tokens are never taken as arguments and never logged):
   FOUNDRY_PROXY_GITHUB_TOKEN  the proxy's token (Contents: read-only on the module repositories);
@@ -70,6 +78,12 @@ Environment (tokens are never taken as arguments and never logged):
   UPDATER_GITHUB_TOKEN        a separate token for the updater (Contents: read-only on this repository)
   INSTALL_GITHUB_TOKEN        set by the one-line installer; stored as the updater token when automatic updates
                               are turned on (asked first when interactive)
+  FOUNDRY_PROXY_ADMIN_PASSWORD  password of the administration page (at least 8 characters; first install or
+                              --set-admin-password; without one the page stays off)
+  FOUNDRY_PROXY_NOTIFY_EMAILS   update-notification recipients, comma separated (first install or --set-notify)
+  FOUNDRY_PROXY_SMTP_HOST, FOUNDRY_PROXY_SMTP_PORT, FOUNDRY_PROXY_SMTP_SECURITY (starttls|tls|none),
+  FOUNDRY_PROXY_SMTP_USER, FOUNDRY_PROXY_SMTP_PASSWORD, FOUNDRY_PROXY_SMTP_FROM
+                              the mail server for those e-mails
   NODE_BIN                    the node binary to use
 USAGE
 }
@@ -105,6 +119,8 @@ while [[ $# -gt 0 ]]; do
         --check | --check-update) action=check ;;
         --update-now) action=update ;;
         --uninstall) action=uninstall ;;
+        --set-admin-password) action=admin-password ;;
+        --set-notify) action=notify ;;
         --purge) purge=yes ;;
         -h | --help) print_usage; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; usage ;;
@@ -173,7 +189,7 @@ run_updater() {
         exit 1
     fi
     local rc=0
-    export SERVICE_NAME APP_DIR CONF_DIR NODE_BIN
+    export SERVICE_NAME SERVICE_USER APP_DIR CONF_DIR NODE_BIN
     "$BASH_BIN" "$APP_DIR/scripts/auto-update.sh" "$1" || rc=$?
     return "$rc"
 }
@@ -256,7 +272,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-Environment=SERVICE_NAME=${SERVICE_NAME} APP_DIR=${APP_DIR} CONF_DIR=${CONF_DIR} NODE_BIN=${NODE_BIN}
+Environment=SERVICE_NAME=${SERVICE_NAME} SERVICE_USER=${SERVICE_USER} APP_DIR=${APP_DIR} CONF_DIR=${CONF_DIR} NODE_BIN=${NODE_BIN}
 ExecStart=${BASH_BIN} ${APP_DIR}/scripts/auto-update.sh --apply
 TimeoutStartSec=15min
 NoNewPrivileges=true
@@ -348,6 +364,94 @@ write_modules_config() {
     ' "$SRC_DIR/src/server.js" "$out" "$@"
 }
 
+# Asks for a new admin page password (twice, hidden) and prints it; prints nothing for "no password".
+ask_admin_password() {
+    local pw="" again=""
+    while true; do
+        read -rsp "Password for the administration page (at least 8 characters; Enter = page off): " pw || pw=""
+        echo >&2
+        [[ -z "$pw" ]] && return 0
+        if [[ ${#pw} -lt 8 ]]; then
+            echo "Too short; use at least 8 characters." >&2
+            continue
+        fi
+        read -rsp "Repeat the password: " again || again=""
+        echo >&2
+        if [[ "$pw" == "$again" ]]; then
+            printf '%s' "$pw"
+            return 0
+        fi
+        echo "The passwords do not match; try again." >&2
+    done
+}
+
+# Asks for the notification e-mail settings and exports them as FOUNDRY_PROXY_* variables for src/admin.js setup.
+ask_notify() {
+    local value=""
+    echo "The proxy can e-mail you when it has updated itself or an automatic update failed." >&2
+    read -rp "E-mail addresses for these notifications (comma separated; Enter = none): " value || value=""
+    [[ -z "$value" ]] && return 0
+    export FOUNDRY_PROXY_NOTIFY_EMAILS="$value"
+    read -rp "SMTP server (e.g. smtp.gmail.com): " value || value=""
+    export FOUNDRY_PROXY_SMTP_HOST="$value"
+    read -rp "SMTP security, starttls / tls / none [starttls]: " value || value=""
+    export FOUNDRY_PROXY_SMTP_SECURITY="${value:-starttls}"
+    local port=587
+    [[ "$FOUNDRY_PROXY_SMTP_SECURITY" == tls ]] && port=465
+    [[ "$FOUNDRY_PROXY_SMTP_SECURITY" == none ]] && port=25
+    read -rp "SMTP port [$port]: " value || value=""
+    export FOUNDRY_PROXY_SMTP_PORT="${value:-$port}"
+    read -rp "SMTP user name (Enter = no login): " value || value=""
+    export FOUNDRY_PROXY_SMTP_USER="$value"
+    if [[ -n "$value" ]]; then
+        read -rsp "SMTP password: " value || value=""
+        echo >&2
+        export FOUNDRY_PROXY_SMTP_PASSWORD="$value"
+    fi
+    read -rp "Sender address (From): " value || value=""
+    export FOUNDRY_PROXY_SMTP_FROM="$value"
+}
+
+# Creates or updates admin.json through src/admin.js (secrets go through the environment only), owned by the service
+# user with mode 600. $1: first = new file (asks for everything when interactive), password / notify = change that part.
+configure_admin() {
+    local what="$1" file="$CONF_DIR/admin.json" pw=""
+    if interactive; then
+        if [[ "$what" != notify && -z "${FOUNDRY_PROXY_ADMIN_PASSWORD:-}" ]]; then
+            pw="$(ask_admin_password)"
+            [[ -n "$pw" ]] && export FOUNDRY_PROXY_ADMIN_PASSWORD="$pw"
+        fi
+        if [[ "$what" != password && -z "${FOUNDRY_PROXY_NOTIFY_EMAILS:-}" ]]; then ask_notify; fi
+    fi
+    if [[ "$what" == password && -z "${FOUNDRY_PROXY_ADMIN_PASSWORD:-}" ]]; then
+        echo "No password given (set FOUNDRY_PROXY_ADMIN_PASSWORD or run this in a terminal); nothing changed." >&2
+        exit 1
+    fi
+    if [[ "$what" == password ]]; then
+        # only the password: notification variables from the caller's environment stay out
+        unset FOUNDRY_PROXY_NOTIFY_EMAILS FOUNDRY_PROXY_SMTP_HOST FOUNDRY_PROXY_SMTP_PORT FOUNDRY_PROXY_SMTP_SECURITY \
+            FOUNDRY_PROXY_SMTP_USER FOUNDRY_PROXY_SMTP_PASSWORD FOUNDRY_PROXY_SMTP_FROM
+    elif [[ "$what" == notify ]]; then
+        unset FOUNDRY_PROXY_ADMIN_PASSWORD
+    fi
+    (umask 077 && "$NODE_BIN" "$SRC_DIR/src/admin.js" setup "$file")
+    chown "$SERVICE_USER:$SERVICE_USER" "$file"
+    chmod 600 "$file"
+    unset FOUNDRY_PROXY_ADMIN_PASSWORD FOUNDRY_PROXY_SMTP_PASSWORD
+}
+
+if [[ "$action" == admin-password || "$action" == notify ]]; then
+    if [[ ! -f "$APP_DIR/src/admin.js" || ! -f "$CONF_DIR/env" ]]; then
+        echo "The proxy is not installed (or too old for the admin page); install it first: sudo $0" >&2
+        exit 1
+    fi
+    SRC_DIR="$APP_DIR"
+    if [[ "$action" == admin-password ]]; then configure_admin password; else configure_admin notify; fi
+    systemctl restart "$SERVICE_NAME"
+    echo "Restarted $SERVICE_NAME."
+    exit 0
+fi
+
 # --yes: a first install needs the proxy's token from the environment; fail before anything is changed.
 if [[ "$assume_yes" == yes && ! -f "$CONF_DIR/env" && -z "${FOUNDRY_PROXY_GITHUB_TOKEN:-}" ]]; then
     echo "--yes: no GitHub token for the proxy. Set FOUNDRY_PROXY_GITHUB_TOKEN (fine-grained, Contents: read-only on the" >&2
@@ -379,16 +483,25 @@ if [[ ! -f "$CONF_DIR/config.json" ]]; then
     if [[ ${#modules[@]} -gt 0 ]]; then
         config_tmp="$(mktemp)"
         write_modules_config "$config_tmp" "${modules[@]}"
-        install -m 640 -o root -g "$SERVICE_USER" "$config_tmp" "$CONF_DIR/config.json"
+        install -m 600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$config_tmp" "$CONF_DIR/config.json"
         rm -f "$config_tmp"
         echo "Wrote $CONF_DIR/config.json with: ${modules[*]}"
     else
-        install -m 640 -o root -g "$SERVICE_USER" "$SRC_DIR/config.example.json" "$CONF_DIR/config.json"
+        install -m 600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$SRC_DIR/config.example.json" "$CONF_DIR/config.json"
         echo "Wrote example config $CONF_DIR/config.json - edit it to list your modules."
     fi
 elif [[ ${#modules[@]} -gt 0 ]]; then
-    echo "Keeping the existing $CONF_DIR/config.json; ignoring --module (edit the file to add modules)." >&2
+    echo "Keeping the existing $CONF_DIR/config.json; ignoring --module (add modules on the admin page)." >&2
 fi
+# The proxy rewrites config.json when modules are changed on the admin page (installs before 1.3.0 had it root-owned).
+chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/config.json"
+chmod 600 "$CONF_DIR/config.json"
+# admin.json: created once (asks for the admin password and notification e-mails), never overwritten here.
+if [[ ! -f "$CONF_DIR/admin.json" ]]; then
+    configure_admin first
+fi
+chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/admin.json"
+chmod 600 "$CONF_DIR/admin.json"
 if [[ ! -f "$CONF_DIR/env" ]]; then
     token="REPLACE_ME"
     if [[ -n "${FOUNDRY_PROXY_GITHUB_TOKEN:-}" ]]; then
@@ -430,6 +543,8 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
+# the admin page rewrites these two files (and nothing else under /etc)
+ReadWritePaths=-${CONF_DIR}/config.json -${CONF_DIR}/admin.json
 ProtectHome=true
 PrivateTmp=true
 
@@ -469,3 +584,10 @@ fi
 
 echo "Status:  systemctl status $SERVICE_NAME"
 echo "Logs:    journalctl -u $SERVICE_NAME -f"
+if "$NODE_BIN" "$APP_DIR/src/admin.js" check "$CONF_DIR/admin.json" >/dev/null 2>&1; then
+    port="$(sed -n 's/^PORT=//p' "$CONF_DIR/env" | tail -n 1)"
+    port="${port:-8787}"
+    echo "Admin:   http://localhost:$port/_admin/ (from another computer: ssh -L $port:localhost:$port <this host>)"
+else
+    echo "Admin:   page off; turn it on with: sudo $APP_DIR/scripts/install-service.sh --set-admin-password"
+fi

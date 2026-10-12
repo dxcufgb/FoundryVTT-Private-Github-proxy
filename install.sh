@@ -11,6 +11,7 @@
 #     sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN ./install.sh --yes \
 #       --module transformations=dxcufgb/FoundryVTT-ghpg-Transformations   # fully unattended
 #   sudo ./install.sh --check-update                    # exit 0 = up to date, 10 = newer release available
+#   sudo ./install.sh --set-admin-password              # turn on / change the password of the admin page (/_admin/)
 #   sudo ./install.sh --uninstall [--purge]             # remove service, updater, code and a Node.js installed here
 #
 # `./install.sh --help` lists every option. install.sh itself handles --install-node (download Node.js without asking),
@@ -46,7 +47,8 @@ for arg in "$@"; do
             exit 0
             ;;
         --uninstall) uninstall=yes; passthrough+=("$arg") ;;
-        --check | --check-update | --update-now | --enable-auto-update | --disable-auto-update)
+        --check | --check-update | --update-now | --enable-auto-update | --disable-auto-update | \
+            --set-admin-password | --set-notify)
             manage=yes; passthrough+=("$arg") ;;
         *) passthrough+=("$arg") ;;
     esac
@@ -55,7 +57,10 @@ if [[ "$assume_yes" == yes && "$install_node" == ask ]]; then install_node=yes; 
 
 if [[ $EUID -ne 0 ]]; then
     echo "Re-running with sudo..." >&2
-    exec sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN,UPDATER_GITHUB_TOKEN,INSTALL_GITHUB_TOKEN,NODE_BIN "$0" "$@"
+    keep=FOUNDRY_PROXY_GITHUB_TOKEN,UPDATER_GITHUB_TOKEN,INSTALL_GITHUB_TOKEN,NODE_BIN,FOUNDRY_PROXY_ADMIN_PASSWORD
+    keep+=,FOUNDRY_PROXY_NOTIFY_EMAILS,FOUNDRY_PROXY_SMTP_HOST,FOUNDRY_PROXY_SMTP_PORT,FOUNDRY_PROXY_SMTP_SECURITY
+    keep+=,FOUNDRY_PROXY_SMTP_USER,FOUNDRY_PROXY_SMTP_PASSWORD,FOUNDRY_PROXY_SMTP_FROM
+    exec sudo --preserve-env="$keep" "$0" "$@"
 fi
 if [[ ! -x "$HERE/scripts/install-service.sh" ]]; then
     echo "scripts/install-service.sh not found next to install.sh; run it from a clone or an unpacked release." >&2

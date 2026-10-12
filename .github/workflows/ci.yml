@@ -46,8 +46,7 @@ jobs:
 
       - name: Entry points parse
         run: |
-          node --check src/server.js
-          node --check src/updater.js
+          for f in src/*.js src/admin-ui/app.js; do node --check "$f"; done
 
       - name: Unit tests
         run: npm test
@@ -98,6 +97,8 @@ jobs:
     env:
       # Fake token: the proxy only has to start and answer 404 for a module that is not configured.
       FOUNDRY_PROXY_GITHUB_TOKEN: github_pat_ci_not_a_real_token
+      # Not a secret: a throwaway password for the admin page of this test install.
+      FOUNDRY_PROXY_ADMIN_PASSWORD: ci-admin-password
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,7 +107,7 @@ jobs:
           persist-credentials: false
 
       - name: Install with the system Node.js
-        run: sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN ./install.sh --module demo=octo/demo
+        run: sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN,FOUNDRY_PROXY_ADMIN_PASSWORD ./install.sh --module demo=octo/demo
 
       - name: Proxy answers
         run: |
@@ -119,7 +120,28 @@ jobs:
           systemctl is-active foundry-release-proxy
           sudo grep -q '"demo"' /etc/foundry-release-proxy/config.json
           test "$(sudo stat -c '%a %U' /etc/foundry-release-proxy/env)" = "600 foundry-proxy"
+          test "$(sudo stat -c '%a %U' /etc/foundry-release-proxy/admin.json)" = "600 foundry-proxy"
+          test "$(sudo stat -c '%a %U' /etc/foundry-release-proxy/config.json)" = "600 foundry-proxy"
           test "$code" = 404
+
+      - name: Admin page saves modules under the systemd hardening
+        run: |
+          api=http://localhost:8787/_admin/api
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/_admin/)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$api/state")" = 401
+          csrf="$(curl -sf -c "$RUNNER_TEMP/jar" -H 'Content-Type: application/json' \
+            -d "{\"password\":\"$FOUNDRY_PROXY_ADMIN_PASSWORD\"}" "$api/login" | jq -r .csrf)"
+          test -n "$csrf"
+          curl -sf -b "$RUNNER_TEMP/jar" -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
+            -d '{"id":"added","repo":"octo/added"}' "$api/modules" | jq -e '.modules[] | select(.id == "added")'
+          sudo grep -q '"added"' /etc/foundry-release-proxy/config.json
+          # the change survives a restart
+          sudo systemctl restart foundry-release-proxy
+          for _ in $(seq 1 15); do
+            sudo journalctl -u foundry-release-proxy --no-pager | grep -q 'modules: demo, added' && exit 0
+            sleep 1
+          done
+          exit 1
 
       - name: Uninstall
         run: |

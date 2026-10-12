@@ -12,11 +12,15 @@ Run from an elevated Windows PowerShell 5.1 (or newer) prompt in the unpacked re
   .\scripts\install-service.ps1 -Check               is a newer release available? (report only)
   .\scripts\install-service.ps1 -UpdateNow           install the latest release now
   .\scripts\install-service.ps1 -Uninstall           remove tasks, updater and code (keeps config and env)
+  .\scripts\install-service.ps1 -SetAdminPassword    (re)set the password of the administration page (/_admin/)
+  .\scripts\install-service.ps1 -SetNotify           (re)enter the update-notification e-mail settings
 
 Layout (config.json and env are created once and never overwritten):
   C:\Program Files\FoundryReleaseProxy\              code (replaced on every run)
   C:\Program Files\FoundryReleaseProxy.prev\         previous code, kept by the updater for rollback
-  C:\ProgramData\FoundryReleaseProxy\config.json     module id -> repo mapping
+  C:\ProgramData\FoundryReleaseProxy\config.json     module id -> repo mapping (LOCAL SERVICE may rewrite it: admin page)
+  C:\ProgramData\FoundryReleaseProxy\admin.json      admin page password hash + notification e-mail settings
+                                                    (Administrators/SYSTEM + LOCAL SERVICE read/write)
   C:\ProgramData\FoundryReleaseProxy\env             GITHUB_TOKEN, PORT, ... (Administrators/SYSTEM + LOCAL SERVICE read)
   C:\ProgramData\FoundryReleaseProxy\logs\proxy.log  proxy log
   C:\ProgramData\FoundryReleaseProxy\auto-update.conf, auto-update.log, updater-token (Administrators/SYSTEM only)
@@ -24,7 +28,8 @@ Layout (config.json and env are created once and never overwritten):
 The proxy runs as the scheduled task "FoundryReleaseProxy" under LOCAL SERVICE (node --env-file, Node.js >= 20.6).
 The updater runs daily (random delay) as the task "FoundryReleaseProxy-Update" under SYSTEM.
 Tokens come from a hidden prompt or the FOUNDRY_PROXY_GITHUB_TOKEN / UPDATER_GITHUB_TOKEN environment variables,
-never from the command line.
+never from the command line. The same goes for the admin page password (FOUNDRY_PROXY_ADMIN_PASSWORD) and the
+notification settings (FOUNDRY_PROXY_NOTIFY_EMAILS, FOUNDRY_PROXY_SMTP_HOST, _PORT, _SECURITY, _USER, _PASSWORD, _FROM).
 #>
 [CmdletBinding()]
 param(
@@ -35,6 +40,8 @@ param(
     [switch]$DisableAutoUpdate,
     [switch]$Check,
     [switch]$UpdateNow,
+    [switch]$SetAdminPassword,
+    [switch]$SetNotify,
     # Non-interactive re-install that keeps every setting; used by the updater.
     [switch]$Upgrade,
     [string]$NodePath
@@ -51,6 +58,7 @@ $DataDir = Join-Path $env:ProgramData $AppName
 $LogDir = Join-Path $DataDir 'logs'
 $EnvFile = Join-Path $DataDir 'env'
 $ConfigFile = Join-Path $DataDir 'config.json'
+$AdminFile = Join-Path $DataDir 'admin.json'
 $AutoConf = Join-Path $DataDir 'auto-update.conf'
 $UpdaterTokenFile = Join-Path $DataDir 'updater-token'
 $TaskName = $AppName
@@ -108,6 +116,12 @@ function Protect-ProxyFile([string]$Path) {
     Protect-Path $Path @("*${SidAdmins}:F", "*${SidSystem}:F", "*${SidLocalService}:R")
 }
 
+# Files the proxy (LOCAL SERVICE) reads and rewrites in place from the admin page: config.json and admin.json.
+# (R,W) and no DELETE: it cannot remove or replace them, and it cannot create files in the data folder.
+function Protect-ProxyWritableFile([string]$Path) {
+    Protect-Path $Path @("*${SidAdmins}:F", "*${SidSystem}:F", "*${SidLocalService}:(R,W)")
+}
+
 function Write-TextFile([string]$Path, [string]$Text) {
     [IO.File]::WriteAllText($Path, $Text, $Utf8)
 }
@@ -117,6 +131,70 @@ function Read-Secret([string]$Prompt) {
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+
+$NotifyVars = @('FOUNDRY_PROXY_NOTIFY_EMAILS', 'FOUNDRY_PROXY_SMTP_HOST', 'FOUNDRY_PROXY_SMTP_PORT',
+    'FOUNDRY_PROXY_SMTP_SECURITY', 'FOUNDRY_PROXY_SMTP_USER', 'FOUNDRY_PROXY_SMTP_PASSWORD', 'FOUNDRY_PROXY_SMTP_FROM')
+
+# Asks for a new admin page password (twice, hidden); returns '' for "no password" (the page stays off).
+function Read-AdminPassword {
+    while ($true) {
+        $pw = Read-Secret 'Password for the administration page (at least 8 characters; Enter = page off)'
+        if (-not $pw) { return '' }
+        if ($pw.Length -lt 8) { Write-ProxyLog 'Too short; use at least 8 characters.'; continue }
+        if ((Read-Secret 'Repeat the password') -ceq $pw) { return $pw }
+        Write-ProxyLog 'The passwords do not match; try again.'
+    }
+}
+
+# Asks for the notification e-mail settings and puts them into the FOUNDRY_PROXY_* variables of this process.
+function Read-NotifySetting {
+    Write-ProxyLog 'The proxy can e-mail you when it has updated itself or an automatic update failed.'
+    $emails = Read-Host -Prompt 'E-mail addresses for these notifications (comma separated; Enter = none)'
+    if (-not $emails) { return }
+    $env:FOUNDRY_PROXY_NOTIFY_EMAILS = $emails
+    $env:FOUNDRY_PROXY_SMTP_HOST = Read-Host -Prompt 'SMTP server (e.g. smtp.gmail.com)'
+    $security = Read-Host -Prompt 'SMTP security, starttls / tls / none [starttls]'
+    if (-not $security) { $security = 'starttls' }
+    $env:FOUNDRY_PROXY_SMTP_SECURITY = $security
+    $port = switch ($security) { 'tls' { '465' } 'none' { '25' } default { '587' } }
+    $answer = Read-Host -Prompt "SMTP port [$port]"
+    if ($answer) { $port = $answer }
+    $env:FOUNDRY_PROXY_SMTP_PORT = $port
+    $env:FOUNDRY_PROXY_SMTP_USER = Read-Host -Prompt 'SMTP user name (Enter = no login)'
+    if ($env:FOUNDRY_PROXY_SMTP_USER) { $env:FOUNDRY_PROXY_SMTP_PASSWORD = Read-Secret 'SMTP password' }
+    $env:FOUNDRY_PROXY_SMTP_FROM = Read-Host -Prompt 'Sender address (From)'
+}
+
+# Creates or updates admin.json through src\admin.js; secrets only travel in environment variables of this process.
+# $What: first = new file (asks for everything when interactive), password / notify = change that part.
+function Write-AdminSetting([string]$What, [string]$Node) {
+    if (Test-Interactive) {
+        if ($What -ne 'notify' -and -not $env:FOUNDRY_PROXY_ADMIN_PASSWORD) {
+            $pw = Read-AdminPassword
+            if ($pw) { $env:FOUNDRY_PROXY_ADMIN_PASSWORD = $pw }
+        }
+        if ($What -ne 'password' -and -not $env:FOUNDRY_PROXY_NOTIFY_EMAILS) { Read-NotifySetting }
+    }
+    if ($What -eq 'password' -and -not $env:FOUNDRY_PROXY_ADMIN_PASSWORD) {
+        throw 'No password given (set FOUNDRY_PROXY_ADMIN_PASSWORD or run this in a console); nothing changed.'
+    }
+    if ($What -eq 'password') {
+        foreach ($name in $NotifyVars) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+    }
+    elseif ($What -eq 'notify') {
+        Remove-Item -LiteralPath 'Env:FOUNDRY_PROXY_ADMIN_PASSWORD' -ErrorAction SilentlyContinue
+    }
+    # An empty file with its final ACL first, so the secrets never sit in a file with looser rights.
+    if (-not (Test-Path -LiteralPath $AdminFile)) { Write-TextFile $AdminFile '' }
+    Protect-ProxyWritableFile $AdminFile
+    try {
+        & $Node (Join-Path $AppDir 'src\admin.js') setup $AdminFile | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "could not write $AdminFile (see the message above)" }
+    }
+    finally {
+        Remove-Item -LiteralPath 'Env:FOUNDRY_PROXY_ADMIN_PASSWORD', 'Env:FOUNDRY_PROXY_SMTP_PASSWORD' -ErrorAction SilentlyContinue
+    }
 }
 
 function Test-Admin {
@@ -267,6 +345,17 @@ if ($UpdateNow) { exit (Invoke-Updater '-Apply') }
 
 $node = Resolve-NodePath
 
+if ($SetAdminPassword -or $SetNotify) {
+    if (-not (Test-Path -LiteralPath (Join-Path $AppDir 'src\admin.js')) -or -not (Test-Path -LiteralPath $EnvFile)) {
+        throw "The proxy is not installed (or too old for the admin page); run .\scripts\install-service.ps1 first."
+    }
+    if ($SetAdminPassword) { Write-AdminSetting 'password' $node } else { Write-AdminSetting 'notify' $node }
+    Invoke-ProxyShutdown
+    if ((Get-ScheduledTask -TaskName $TaskName).State -ne 'Disabled') { Start-ScheduledTask -TaskName $TaskName }
+    Write-ProxyLog "Restarted $TaskName."
+    exit 0
+}
+
 if ($EnableAutoUpdate -or $DisableAutoUpdate) {
     if (-not (Test-Path -LiteralPath (Join-Path $AppDir 'src\updater.js'))) {
         throw "$AppDir is not installed (or too old for auto-update); run .\scripts\install-service.ps1 -AutoUpdate"
@@ -298,7 +387,10 @@ if (-not (Test-Path -LiteralPath $ConfigFile)) {
     Copy-Item -LiteralPath (Join-Path $SrcDir 'config.example.json') -Destination $ConfigFile
     Write-ProxyLog "Wrote example config $ConfigFile - edit it to list your modules."
 }
-Protect-ProxyFile $ConfigFile
+Protect-ProxyWritableFile $ConfigFile
+# admin.json: created once (asks for the admin password and notification e-mails), never overwritten here.
+if (-not (Test-Path -LiteralPath $AdminFile)) { Write-AdminSetting 'first' $node }
+Protect-ProxyWritableFile $AdminFile
 if (-not (Test-Path -LiteralPath $EnvFile)) {
     $token = 'REPLACE_ME'
     if ($env:FOUNDRY_PROXY_GITHUB_TOKEN) {
@@ -366,4 +458,13 @@ else { Write-AutoUpdateConf -Enabled 'no' -TokenFile '' -Node $node }
 
 Write-ProxyLog "Status: Get-ScheduledTask $TaskName | Select-Object State"
 Write-ProxyLog "Logs:   Get-Content -Wait $log"
+& $node (Join-Path $AppDir 'src\admin.js') check $AdminFile | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    $port = ([IO.File]::ReadAllLines($EnvFile) | Where-Object { $_ -like 'PORT=*' } | Select-Object -Last 1) -replace '^PORT=', ''
+    if (-not $port) { $port = '8787' }
+    Write-ProxyLog "Admin:  http://localhost:$port/_admin/"
+}
+else {
+    Write-ProxyLog 'Admin:  page off; turn it on with: .\scripts\install-service.ps1 -SetAdminPassword'
+}
 exit 0

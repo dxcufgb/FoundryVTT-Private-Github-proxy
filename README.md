@@ -368,15 +368,18 @@ whole git history, `Code (Semgrep)` runs the Semgrep registry rules, `Dependenci
 npm dependencies (nothing to audit). The same checks locally (gitleaks 8.30.1, semgrep 1.180.0):
 
 ```sh
-gitleaks git --redact .
+gitleaks git --redact --log-opts="--full-history --diff-filter=tuxdb HEAD" .
 semgrep scan --metrics=off --error --severity WARNING --severity ERROR \
   --config p/python --config p/javascript --config p/security-audit \
   --config p/secrets --config p/github-actions --config r/bash
 ```
 
-Mark a false positive with `// nosemgrep: <rule-id>` (JavaScript) or `# nosemgrep: <rule-id>` (shell, PowerShell) on
-or above the line, with a reason (Semgrep), or with a narrow, commented allowlist entry in `.gitleaks.toml` (gitleaks;
-start it with `[extend]` `useDefault = true` so the default rules stay on).
+Mark a Semgrep false positive with `// nosemgrep: <rule-id>` (JavaScript) or `# nosemgrep: <rule-id>` (shell, YAML,
+PowerShell) on the matched line or the line immediately before it, with a reason. Mark a gitleaks false positive with
+a narrow, commented allowlist entry in `.gitleaks.toml`; the file must have `[extend]` with `useDefault = true` (the
+workflow checks this), or it would replace the default rules. Before scanning, the workflow checks that the pinned
+gitleaks detects a token generated at run time, and it scans only the checked-out commit's history (`HEAD`), not every
+branch.
 
 ## Branch protection
 

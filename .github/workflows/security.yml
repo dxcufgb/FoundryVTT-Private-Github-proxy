@@ -1,10 +1,11 @@
 # Security scans. GitHub's own secret scanning and CodeQL are not available for this private repository, so this
 # workflow runs free tools instead. Identical in every dxcufgb repository except the Dependencies job (per language).
 # The three job names "Secrets (gitleaks)", "Code (Semgrep)" and "Dependencies" are required status checks: keep them.
-#   - Secrets (gitleaks): the whole history of the checked-out commit, with a pinned gitleaks release binary whose
-#     SHA-256 is hard-coded below. Output is redacted. A true false positive (a fake token in a test) goes into
-#     .gitleaks.toml as a narrow allowlist entry with a comment; the file must start with [extend] useDefault = true,
-#     or it replaces the default rules instead of adding to them.
+#   - Secrets (gitleaks): the whole history of the checked-out commit (only HEAD's history: other branches are
+#     fetched too, but a finding there must not fail this run), with a pinned gitleaks release binary whose SHA-256
+#     is hard-coded below and which must first detect a token generated at run time. Output is redacted. A true
+#     false positive (a fake token in a test) goes into .gitleaks.toml as a narrow allowlist entry with a comment;
+#     the job fails unless that file has [extend] useDefault = true, which keeps the default rules on.
 #   - Code (Semgrep): the Semgrep registry rules listed in the scan step (r/bash: every bash rule, there is no bash
 #     ruleset), rules of severity WARNING and ERROR. INFO rules are style and best-practice hints, too noisy for a
 #     blocking check. Fix a finding, or mark a false positive with an inline "nosemgrep: <rule-id>" comment and a
@@ -62,11 +63,43 @@ jobs:
           "$dir/gitleaks" version
           echo "$dir" >> "$GITHUB_PATH"
 
+      # Proves the pinned binary and its default rules still catch a secret. The token is assembled at run time in a
+      # temporary folder, so no secret-shaped literal is ever committed (the repository scan would flag it).
+      - name: Self-test (gitleaks must detect a generated token)
+        run: |
+          dir="$(mktemp -d)"
+          random="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 36)"
+          printf 'token = "%s%s_%s"\n' "gh" "p" "$random" > "$dir/settings.txt"
+          report="$RUNNER_TEMP/gitleaks-self-test.json"
+          gitleaks dir --redact --no-banner --exit-code 0 --report-format json --report-path "$report" "$dir"
+          rm -rf "$dir"
+          if [ "$(jq '[.[] | select(.RuleID == "github-pat")] | length' "$report")" -lt 1 ]; then
+            echo "::error title=gitleaks self-test::gitleaks did not detect a generated GitHub token; the scan cannot be trusted"
+            exit 1
+          fi
+          echo "Self-test passed: the generated token was detected."
+
+      # A .gitleaks.toml without [extend] useDefault = true replaces the default rules, which would silently turn
+      # most of the scan off.
+      - name: Check .gitleaks.toml
+        run: |
+          if [ ! -e .gitleaks.toml ]; then
+            echo "No .gitleaks.toml: default rules."
+            exit 0
+          fi
+          python3 -c 'import sys, tomllib; c = tomllib.load(open(".gitleaks.toml", "rb")); sys.exit(0 if c.get("extend", {}).get("useDefault") is True else 1)' || {
+            echo "::error file=.gitleaks.toml,title=gitleaks config::.gitleaks.toml must extend the default rules: add [extend] with useDefault = true"
+            exit 1
+          }
+          echo ".gitleaks.toml extends the default rules."
+
       - name: Scan the git history
         run: |
           report="$RUNNER_TEMP/gitleaks.json"
-          # .gitleaks.toml in the repository root is picked up automatically when present
-          if gitleaks git --redact --no-banner --exit-code 1 --report-format json --report-path "$report" .; then
+          # .gitleaks.toml in the repository root is picked up automatically when present. Without --log-opts gitleaks
+          # scans every ref (git log --all); these are its default options with HEAD instead.
+          if gitleaks git --redact --no-banner --exit-code 1 --report-format json --report-path "$report" \
+            --log-opts="--full-history --diff-filter=tuxdb HEAD" .; then
             exit 0
           fi
           jq -r '.[] | "::error file=\(.File),line=\(.StartLine),title=gitleaks \(.RuleID)::Possible secret (\(.RuleID)) in commit \(.Commit[0:12]); remove and rotate it, or allowlist a false positive in .gitleaks.toml"' "$report" || true

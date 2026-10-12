@@ -43,7 +43,7 @@ installs new releases of the proxy itself.
   hand; files are attached afterwards). It runs `ci.yml` (workflow_call), the build, the Windows installer, then
   publishes (draft first; a leftover draft is replaced, a moved tag stops it).
 - `.github/ruleset-protect-main.json` – the "Protect main" ruleset (squash only, 1 approval, required CI checks), the same
-  as in the other FoundryVTT repos; importable only on a plan that allows rulesets on private repos. Keep its check names in
+  as in the other FoundryVTT repos and enforced by GitHub (the account has GitHub Pro). Keep its check names in
   step with the job names in `ci.yml` (only jobs that run on every PR belong in it). `.github/` also holds the PR and issue
   templates and `SECURITY.md`.
 - `config.example.json`, `.env.example` – templates. Real `config.json`/`.env` are gitignored.
@@ -55,6 +55,7 @@ installs new releases of the proxy itself.
   Node 20/22/24, `shellcheck install.sh scripts/*.sh`, PSScriptAnalyzer on `scripts/*.ps1` and `packaging/windows/*.ps1`, an
   `install.sh` run under systemd on the runner, and a silent install/uninstall of the Inno Setup exe on a Windows runner. Workflow changes are
   linted by actionlint and zizmor.
+- Security (`.github/workflows/security.yml`, required checks `Secrets (gitleaks)`, `Code (Semgrep)`, `Dependencies`; push to main, PRs, weekly): locally `gitleaks git --redact --log-opts="--full-history --diff-filter=tuxdb --diff-merges=first-parent HEAD" .` (only the checked-out history, like CI), `semgrep scan --metrics=off --error --severity WARNING --severity ERROR --config p/python --config p/javascript --config p/security-audit --config p/secrets --config p/github-actions --config r/bash`, and no npm dependencies, so nothing to audit (the job fails if `package.json` gains one). Semgrep false positives: `// nosemgrep: <rule-id>` (JavaScript) or `# nosemgrep: <rule-id>` (shell, YAML, PowerShell) on the matched line or the line immediately before it, with a reason; gitleaks: `.gitleaks.toml` with `[extend]` `useDefault = true`.
 
 ## Install on Linux and releasing
 - **Install on Linux**: `curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s foundry-release-proxy`
@@ -99,8 +100,8 @@ installs new releases of the proxy itself.
   non-admin account can change: the Linux code folder stays `root:root`, the Windows one stays under
   Program Files (admin-only write). Upgrades keep `config.json` and `env`; a failed install puts the
   previous code back.
-- `main` is protected by convention (and by the ruleset where the plan allows): changes go through pull requests, merged
-  with squash.
+- `main` is protected by the "Protect main" ruleset: changes go through pull requests, merged with squash; release tags
+  `v*` are protected by the "Protect release tags" ruleset.
 - **Versions**: the version comes from the release tag; nobody bumps `package.json` (it keeps the last release's
   version). The build stamps the tag's version into the built copy, which is what the updater compares.
 - The Windows installer must not duplicate `install-service.ps1`: the wizard only collects answers, writes `config.json`

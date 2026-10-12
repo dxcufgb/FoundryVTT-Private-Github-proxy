@@ -30,7 +30,10 @@
           { "context": "Shellcheck", "integration_id": 15368 },
           { "context": "PSScriptAnalyzer", "integration_id": 15368 },
           { "context": "install.sh (systemd)", "integration_id": 15368 },
-          { "context": "Inno Setup installer", "integration_id": 15368 }
+          { "context": "Inno Setup installer", "integration_id": 15368 },
+          { "context": "Secrets (gitleaks)", "integration_id": 15368 },
+          { "context": "Code (Semgrep)", "integration_id": 15368 },
+          { "context": "Dependencies", "integration_id": 15368 }
         ]
       }
     }

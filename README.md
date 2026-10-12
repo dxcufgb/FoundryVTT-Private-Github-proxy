@@ -358,19 +358,39 @@ with `cd dist && sha256sum -c SHA256SUMS.txt`) and the Windows installer with
 `./scripts/build-release.sh --finish dist 9.9.9` adds the installer's copies and checksums.
 CI also runs `install.sh` on an Ubuntu runner and the Windows installer on a Windows runner for every push.
 
+## Development
+
+`npm test` runs the unit tests (no dependencies to install).
+
+The **Security** workflow (`.github/workflows/security.yml`; GitHub's secret scanning and CodeQL are not available for
+this private repository) runs on every pull request, on pushes to `main` and weekly: `Secrets (gitleaks)` scans the
+whole git history, `Code (Semgrep)` runs the Semgrep registry rules, `Dependencies` checks that the proxy still has no
+npm dependencies (nothing to audit). The same checks locally (gitleaks 8.30.1, semgrep 1.180.0):
+
+```sh
+gitleaks git --redact --log-opts="--full-history --diff-filter=tuxdb --diff-merges=first-parent HEAD" .
+semgrep scan --metrics=off --error --severity WARNING --severity ERROR \
+  --config p/python --config p/javascript --config p/security-audit \
+  --config p/secrets --config p/github-actions --config r/bash
+```
+
+Mark a Semgrep false positive with `// nosemgrep: <rule-id>` (JavaScript) or `# nosemgrep: <rule-id>` (shell, YAML,
+PowerShell) on the matched line or the line immediately before it, with a reason. Mark a gitleaks false positive with
+a narrow, commented allowlist entry in `.gitleaks.toml`; the file must have `[extend]` with `useDefault = true` (the
+workflow checks this), or it would replace the default rules. Before scanning, the workflow checks that the pinned
+gitleaks, with that configuration, detects a token generated at run time; it scans only the checked-out commit's
+history (`HEAD`, merge commits against their first parent), not every branch.
+
 ## Branch protection
 
-`main` is meant to be changed only through pull requests: squash merge only, one approval, the tests, shellcheck,
-PSScriptAnalyzer, the `install.sh` run and the Windows installer build must pass, and nobody can delete `main` or
-force-push it (the repository admin can bypass through a pull request). It is the same rule as in the other
-FoundryVTT repositories and is kept in `.github/ruleset-protect-main.json`.
-
-GitHub only enforces rulesets and branch protection on **private** repositories with a paid plan (GitHub Pro or a
-team/organization plan); on the free plan the API answers "Upgrade to GitHub Pro or make this repository public". Once that
-is available: *Settings → Rules → Rulesets → New ruleset → Import a ruleset* and pick the file. Also set *Settings →
-General → Pull Requests* to squash merging only, "Automatically delete head branches" and "Always suggest updating pull
-request branches", and turn on *Settings → Security → Private vulnerability reporting*. Until then the same rules hold
-by convention: open a pull request, wait for CI, squash merge.
+`main` can only be changed through pull requests: squash merge only, one approval, and the tests, shellcheck,
+PSScriptAnalyzer, the `install.sh` run, the Windows installer build and the three Security checks (gitleaks, Semgrep,
+dependencies) must pass. Nobody can delete `main` or force-push it; the repository admin can bypass the rules only by
+merging a pull request. Release tags `v*` cannot be moved or deleted (the admin can, to clean up a broken release). These
+are the same rulesets as in the other FoundryVTT repositories, enforced by GitHub (GitHub Pro); the branch ruleset is also
+kept in `.github/ruleset-protect-main.json` (*Settings → Rules → Rulesets → Import a ruleset* to re-create it). Pull
+requests are squash merged, the branch is deleted afterwards, and Dependabot alerts, malware alerts and security updates
+are on.
 
 ## Troubleshooting
 

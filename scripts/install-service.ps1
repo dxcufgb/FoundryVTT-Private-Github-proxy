@@ -224,7 +224,10 @@ function Enable-AutoUpdate([string]$Node) {
     Write-ProxyLog "Automatic updates on: daily check (random time) of $UpdateRepo, token from $tokenFile."
     if (-not $IsUpgrade) {
         $rc = Invoke-Updater '-Check'
-        if ($rc -ne 0 -and $rc -ne 10) {
+        if ($rc -eq 75) {
+            Write-ProxyLog 'Another update run is in progress; check later with: .\scripts\install-service.ps1 -Check'
+        }
+        elseif ($rc -ne 0 -and $rc -ne 10) {
             Write-Warning "The update check failed; make sure the token in $tokenFile can read $UpdateRepo. Try: .\scripts\install-service.ps1 -Check"
         }
     }

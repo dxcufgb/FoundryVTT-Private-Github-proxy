@@ -110,6 +110,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Build the archives with the version stamped in
@@ -134,6 +136,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -180,6 +184,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -253,6 +259,15 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           mapfile -t files < "$RUNNER_TEMP/files.txt"
+          # the files were built from the commit the tag pointed at when the release was published; refuse if it moved
+          if ! commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha 2> "$RUNNER_TEMP/lookup.err")"; then
+            echo "::error::could not look up tag $TAG: $(cat "$RUNNER_TEMP/lookup.err")"
+            exit 1
+          fi
+          if [[ "$commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::tag $TAG now points at $commit, but this run built $GITHUB_SHA; nothing attached"
+            exit 1
+          fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
           if grep -q '^## Downloads' "$RUNNER_TEMP/body.md"; then

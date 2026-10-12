@@ -52,6 +52,7 @@ Usage: sudo ./install.sh [options]      (or: sudo ./scripts/install-service.sh [
   --enable-auto-update     turn automatic updates on for an existing install, nothing else
   --disable-auto-update    turn automatic updates off for an existing install, nothing else
   --check-update           only check: exit 0 = up to date, 10 = newer release available, other = error
+                           (75 = could not check now: another update run holds the lock)
   --update-now             install the latest release now (same path as the daily updater)
   --uninstall [--purge]    remove (keep / also delete settings and data)
   --help, -h               this list
@@ -187,9 +188,24 @@ if [[ "$action" == update ]]; then
     exit 0
 fi
 
+# Asks for the updater's token on the terminal and prints it, or prints nothing for "use the proxy's GITHUB_TOKEN".
+# An EOF or read error never yields a token: it means "use the proxy's GITHUB_TOKEN".
+ask_updater_token() {
+    local answer="" token=""
+    echo "The updater needs a GitHub token that can read releases of $UPDATE_REPO." >&2
+    echo "The proxy's own GITHUB_TOKEN works if you also give it Contents: read-only on that repository." >&2
+    read -rp "Use the proxy's GITHUB_TOKEN from $CONF_DIR/env? [Y/n] " answer || return 0
+    if [[ "$answer" =~ ^[Nn] ]]; then
+        if read -rsp "Updater token (fine-grained, Contents: read-only on $UPDATE_REPO): " token; then
+            printf '%s' "$token"
+        fi
+        echo >&2
+    fi
+}
+
 # Chooses the updater's token: UPDATER_GITHUB_TOKEN, the token already configured, INSTALL_GITHUB_TOKEN (the one the
-# one-line installer downloaded this release with; asked first when interactive), a prompt, or the proxy's own
-# GITHUB_TOKEN from env.
+# one-line installer downloaded this release with; asked first when interactive, and only an explicit answer other
+# than "n" stores it: an EOF stores nothing and asks nothing more), a prompt, or the proxy's own GITHUB_TOKEN from env.
 choose_updater_token() {
     local current token="" answer=""
     current="$(setting TOKEN_FILE)"
@@ -200,18 +216,16 @@ choose_updater_token() {
         return
     elif [[ -n "${INSTALL_GITHUB_TOKEN:-}" ]] && ! interactive; then
         token="$INSTALL_GITHUB_TOKEN"
-    elif [[ -n "${INSTALL_GITHUB_TOKEN:-}" ]] &&
-        read -rp "Use the GitHub token this release was downloaded with for automatic updates? [Y/n] " answer &&
-        [[ ! "$answer" =~ ^[Nn] ]]; then
-        token="$INSTALL_GITHUB_TOKEN"
-    elif interactive; then
-        echo "The updater needs a GitHub token that can read releases of $UPDATE_REPO." >&2
-        echo "The proxy's own GITHUB_TOKEN works if you also give it Contents: read-only on that repository." >&2
-        read -rp "Use the proxy's GITHUB_TOKEN from $CONF_DIR/env? [Y/n] " answer || true
-        if [[ "$answer" =~ ^[Nn] ]]; then
-            read -rsp "Updater token (fine-grained, Contents: read-only on $UPDATE_REPO): " token || true
-            echo >&2
+    elif [[ -n "${INSTALL_GITHUB_TOKEN:-}" ]]; then
+        if read -rp "Use the GitHub token this release was downloaded with for automatic updates? [Y/n] " answer; then
+            if [[ "$answer" =~ ^[Nn] ]]; then
+                token="$(ask_updater_token)"
+            else
+                token="$INSTALL_GITHUB_TOKEN"
+            fi
         fi
+    elif interactive; then
+        token="$(ask_updater_token)"
     fi
     if [[ -n "$token" ]]; then
         (umask 077 && printf '%s\n' "$token" > "$UPDATER_TOKEN_FILE")
@@ -288,7 +302,9 @@ enable_auto_update() {
     if [[ "$upgrade" == no ]]; then
         local rc=0
         run_updater --check >/dev/null 2>&1 || rc=$?
-        if [[ $rc -ne 0 && $rc -ne 10 ]]; then
+        if [[ $rc -eq 75 ]]; then
+            echo "Another update run is in progress; check later with: sudo $APP_DIR/scripts/install-service.sh --check-update" >&2
+        elif [[ $rc -ne 0 && $rc -ne 10 ]]; then
             echo "Warning: the update check failed; make sure the token in $token_file can read $UPDATE_REPO." >&2
             echo "Try it with: sudo $APP_DIR/scripts/install-service.sh --check-update" >&2
         fi

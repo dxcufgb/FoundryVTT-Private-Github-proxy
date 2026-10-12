@@ -6,7 +6,8 @@ Updates the installed Foundry release proxy from the latest GitHub release of th
 Normally run as SYSTEM by the scheduled task "FoundryReleaseProxy-Update" that
 `install-service.ps1 -EnableAutoUpdate` registers; `install-service.ps1 -Check` and `-UpdateNow` run it by hand.
 
-  auto-update.ps1 -Check   report whether a newer release exists (exit 0 = up to date, 10 = update available)
+  auto-update.ps1 -Check   report whether a newer release exists (exit 0 = up to date, 10 = update available,
+                           75 = another update run holds the lock, so nothing was checked; anything else = error)
   auto-update.ps1 -Apply   download, verify (SHA256SUMS.txt), install it through install-service.ps1 -Upgrade and
                            restart the proxy; on any failure the previous install is put back
 
@@ -116,6 +117,11 @@ $mutex = New-Object System.Threading.Mutex($false, "Global\$AppName-Update")
 $locked = $false
 try { $locked = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $locked = $true }
 if (-not $locked) {
+    # -Check could not look, so it must not report "up to date" (0) or "update available" (10)
+    if ($Check) {
+        Write-ProxyLog 'another update run is in progress; could not check (exit 75)'
+        exit 75
+    }
     Write-ProxyLog 'another update run is in progress; nothing to do'
     exit 0
 }

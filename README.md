@@ -269,7 +269,8 @@ On Linux `sudo ./scripts/install-service.sh` takes the same options (`--check` i
 The commands also work from the installed copy (`/opt/foundry-release-proxy/scripts/install-service.sh`,
 `C:\Program Files\FoundryReleaseProxy\scripts\install-service.ps1`). Re-running the installer keeps the choice
 (`auto-update.conf` next to `env`; `--no-auto-update` / `-NoAutoUpdate` turn it off while re-installing).
-`--check-update` and `--update-now` work whether or not the daily updates are on.
+`--check-update` and `--update-now` work whether or not the daily updates are on. While another update run holds the lock,
+`--check-update` (`-Check`) exits 75 ("could not check") instead of 0 or 10.
 
 **What an update does**: `src/updater.js` asks `https://api.github.com/repos/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest`
 (drafts and pre-releases never count) and compares the tag with the installed `package.json` version by semantic

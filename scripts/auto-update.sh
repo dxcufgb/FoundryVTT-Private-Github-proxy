@@ -3,7 +3,8 @@
 # Normally run as root by the systemd timer that `install-service.sh --enable-auto-update` sets up;
 # `install-service.sh --check` and `--update-now` run it by hand.
 #
-#   auto-update.sh --check   report whether a newer release exists (exit 0 = up to date, 10 = update available)
+#   auto-update.sh --check   report whether a newer release exists (exit 0 = up to date, 10 = update available,
+#                            75 = another update run holds the lock, so nothing was checked; anything else = error)
 #   auto-update.sh --apply   download, verify (SHA256SUMS.txt), install it through install-service.sh --upgrade and
 #                            restart the service; on any failure the previous install is put back
 #
@@ -44,6 +45,11 @@ TOKEN_FILE="${TOKEN_FILE:-$CONF_DIR/env}"
 mkdir -p "$(dirname "$LOCK_FILE")"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
+    # --check could not look, so it must not report "up to date" (0) or "update available" (10)
+    if [[ "$mode" == "--check" ]]; then
+        echo "auto-update: another update run is in progress; could not check (exit 75)" >&2
+        exit 75
+    fi
     log "another update run is in progress; nothing to do"
     exit 0
 fi

@@ -35,6 +35,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -57,6 +59,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Shellcheck the scripts
@@ -69,6 +73,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       # PSScriptAnalyzer ships with the runner image; the scripts themselves target Windows PowerShell 5.1.
@@ -95,6 +101,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Install with the system Node.js
@@ -142,6 +150,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Inno Setup (if the runner image lacks it)

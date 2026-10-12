@@ -351,8 +351,12 @@ if ($SetAdminPassword -or $SetNotify) {
     }
     if ($SetAdminPassword) { Write-AdminSetting 'password' $node } else { Write-AdminSetting 'notify' $node }
     Invoke-ProxyShutdown
-    if ((Get-ScheduledTask -TaskName $TaskName).State -ne 'Disabled') { Start-ScheduledTask -TaskName $TaskName }
-    Write-ProxyLog "Restarted $TaskName."
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($task -and $task.State -ne 'Disabled') {
+        Start-ScheduledTask -TaskName $TaskName
+        Write-ProxyLog "Saved; restarted $TaskName."
+    }
+    else { Write-ProxyLog "Saved; $TaskName is not registered or disabled, so it was not started." }
     exit 0
 }
 

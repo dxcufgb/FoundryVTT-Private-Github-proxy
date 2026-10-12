@@ -226,11 +226,13 @@ function Write-EnvValue([string]$Key, [string]$Value) {
     Write-TextFile $EnvFile (($lines -join "`r`n") + "`r`n")
 }
 
+# True when admin.json holds a password (the admin page is on).
 function Test-AdminOn([string]$Node) {
     & $Node (Join-Path $AppDir 'src\admin.js') check $AdminFile | Out-Null
     $LASTEXITCODE -eq 0
 }
 
+# True when ADMIN_TLS turns HTTPS off for the admin port.
 function Test-TlsOff { (Get-EnvValue 'ADMIN_TLS') -match '^(off|0|false|no)$' }
 
 # Self-signed certificate for the admin port (made once; -Force makes a new one); LOCAL SERVICE may only read it.
@@ -276,6 +278,7 @@ function Enable-AdminWeb([string]$Node) {
     Write-ProxyLog "Admin page for other computers on port $port (Windows Firewall: allowed on Domain and Private networks)."
 }
 
+# Serve the admin page only on this PC again: clears ADMIN_PORT and removes the firewall rule.
 function Disable-AdminWeb {
     Write-EnvValue 'ADMIN_PORT' ''
     Get-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
@@ -293,6 +296,7 @@ function Invoke-ProxyRestart {
     else { Write-ProxyLog "Saved; $TaskName is not registered or disabled, so it was not started." }
 }
 
+# Logs where the admin page is reachable, for the end of a run.
 function Write-AdminInfo([string]$Node) {
     if (-not (Test-AdminOn $Node)) {
         Write-ProxyLog 'Admin:  page off; turn it on with: .\scripts\install-service.ps1 -SetAdminPassword'

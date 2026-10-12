@@ -27,6 +27,7 @@ const OID = {
 
 // ---- minimal DER encoder --------------------------------------------------------------------------------------------
 
+// A single DER tag-length-value: tag byte, length (short or long form) and the content.
 function tlv(tag, content) {
   const len = content.length;
   let head;
@@ -38,6 +39,8 @@ function tlv(tag, content) {
   }
   return Buffer.concat([head, content]);
 }
+// DER constructors for the ASN.1 types this certificate needs (SEQUENCE, SET, OCTET STRING, BIT STRING, BOOLEAN,
+// UTF8String, and a context-specific [n] EXPLICIT tag).
 const seq = (...parts) => tlv(0x30, Buffer.concat(parts));
 const set = (...parts) => tlv(0x31, Buffer.concat(parts));
 const octets = (buf) => tlv(0x04, buf);
@@ -46,6 +49,7 @@ const bool = (v) => tlv(0x01, Buffer.from([v ? 0xff : 0]));
 const utf8 = (s) => tlv(0x0c, Buffer.from(s, 'utf8'));
 const explicit = (n, inner) => tlv(0xa0 + n, inner);
 
+// DER INTEGER: strips redundant leading 0x00 bytes, then adds one back if the high bit would flip the sign.
 function integer(buf) {
   let b = buf;
   while (b.length > 1 && b[0] === 0 && !(b[1] & 0x80)) b = b.subarray(1);
@@ -53,6 +57,7 @@ function integer(buf) {
   return tlv(0x02, b);
 }
 
+// DER OBJECT IDENTIFIER from its dotted string form.
 function oid(text) {
   const parts = text.split('.').map(Number);
   const out = [40 * parts[0] + parts[1]];
@@ -70,6 +75,7 @@ function time(date) {
   return date.getUTCFullYear() < 2050 ? tlv(0x17, Buffer.from(`${iso.slice(2)}Z`)) : tlv(0x18, Buffer.from(`${iso}Z`));
 }
 
+// Raw address bytes for a subjectAltName iPAddress entry (4 bytes for IPv4, 16 for IPv6).
 function ipBytes(ip) {
   if (net.isIPv4(ip)) return Buffer.from(ip.split('.').map(Number));
   // IPv6: expand "::" and write 8 groups of 16 bits
@@ -143,6 +149,7 @@ function createSelfSigned(names, { days = VALID_DAYS, now = new Date() } = {}) {
   };
 }
 
+// CLI entry point: writes CERT_FILE/KEY_FILE for the given names and prints the certificate's fingerprint.
 function cli(argv) {
   const [certFile, keyFile, ...extra] = argv;
   if (!certFile || !keyFile) {

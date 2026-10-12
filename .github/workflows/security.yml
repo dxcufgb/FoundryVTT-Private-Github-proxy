@@ -3,7 +3,8 @@
 # The three job names "Secrets (gitleaks)", "Code (Semgrep)" and "Dependencies" are required status checks: keep them.
 #   - Secrets (gitleaks): the whole history of the checked-out commit, with a pinned gitleaks release binary whose
 #     SHA-256 is hard-coded below. Output is redacted. A true false positive (a fake token in a test) goes into
-#     .gitleaks.toml (extends the default rules) as a narrow allowlist entry with a comment.
+#     .gitleaks.toml as a narrow allowlist entry with a comment; the file must start with [extend] useDefault = true,
+#     or it replaces the default rules instead of adding to them.
 #   - Code (Semgrep): the Semgrep registry rules listed in the scan step (r/bash: every bash rule, there is no bash
 #     ruleset), rules of severity WARNING and ERROR. INFO rules are style and best-practice hints, too noisy for a
 #     blocking check. Fix a finding, or mark a false positive with an inline "nosemgrep: <rule-id>" comment and a

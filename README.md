@@ -374,8 +374,9 @@ semgrep scan --metrics=off --error --severity WARNING --severity ERROR \
   --config p/secrets --config p/github-actions --config r/bash
 ```
 
-Mark a false positive with `// nosemgrep: <rule-id>` and a reason (Semgrep) or a narrow, commented allowlist entry in
-`.gitleaks.toml` (gitleaks).
+Mark a false positive with `// nosemgrep: <rule-id>` (JavaScript) or `# nosemgrep: <rule-id>` (shell, PowerShell) on
+or above the line, with a reason (Semgrep), or with a narrow, commented allowlist entry in `.gitleaks.toml` (gitleaks;
+start it with `[extend]` `useDefault = true` so the default rules stay on).
 
 ## Branch protection
 

@@ -3,9 +3,12 @@
 // No dependencies: built-in http, fs and fetch only.
 
 const http = require('node:http');
+const https = require('node:https');
+const net = require('node:net');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createAdmin, loadAdminSettings, rewriteFile, SettingsError } = require('./admin.js');
+const { createSelfSigned, defaultNames } = require('./selfsigned.js');
 
 const GITHUB_API = 'https://api.github.com';
 const TIMEOUT_MS = 20000;
@@ -79,7 +82,7 @@ function loadConfig(file, options) {
   return parseConfig(text, file, options);
 }
 
-// admin: { file, settings, hosts } turns on the /_admin page (when settings has a password hash); its module changes
+// admin: { file, settings, hosts, trustProxy } turns on the /_admin page (when settings has a password hash); its module changes
 // are written to configFile.
 function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl = fetch, log = console.log, mailer }) {
   const base = publicBaseUrl.replace(/\/+$/, '');
@@ -173,6 +176,7 @@ function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl
     adminFile: admin.file,
     settings: admin.settings,
     extraHosts: admin.hosts,
+    trustProxy: admin.trustProxy || [],
     publicBaseUrl,
     log,
     mailer,
@@ -243,13 +247,78 @@ function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl
     res.end(body);
   }
 
-  return http.createServer((req, res) => {
-    route(req, res).catch((err) => {
+  // The browser-facing admin listener (ADMIN_PORT) serves the admin page only; "/" leads to it.
+  async function adminRoute(req, res) {
+    let pathname;
+    try {
+      pathname = new URL(req.url, 'http://proxy').pathname;
+    } catch {
+      return send(res, 404, 'not found');
+    }
+    if (pathname === '/') return send(res, 302, 'see /_admin/', { Location: '/_admin/' });
+    if (adminPage && adminPage.handles(pathname)) return adminPage.handle(req, res, pathname);
+    return send(res, 404, 'not found');
+  }
+
+  const wrap = (fn) => (req, res) => {
+    fn(req, res).catch((err) => {
       log(`internal error: ${err.message}`);
       if (!res.headersSent) send(res, 500, 'internal error');
       else res.end();
     });
-  });
+  };
+
+  const server = http.createServer(wrap(route));
+
+  // tls { cert, key }: HTTPS on the admin port, where a plain-HTTP request gets a redirect to https:// (like Webmin);
+  // no tls: plain HTTP (behind a reverse proxy that does HTTPS).
+  server.createAdminServer = (tls) => {
+    if (!tls) return http.createServer(wrap(adminRoute));
+    const secure = https.createServer({ ...tls, minVersion: 'TLSv1.2' }, wrap(adminRoute));
+    const redirect = http.createServer((req, res) => {
+      const host = /^[A-Za-z0-9.:[\]-]+$/.test(req.headers.host || '') ? req.headers.host : null;
+      if (!host) return send(res, 400, 'use https://');
+      return send(res, 301, 'use https://', { Location: `https://${host}/_admin/` });
+    });
+    // A TLS connection starts with a handshake record (0x16); anything else is plain HTTP.
+    const front = net.createServer((socket) => {
+      socket.once('data', (first) => {
+        socket.pause();
+        socket.unshift(first);
+        (first[0] === 0x16 ? secure : redirect).emit('connection', socket);
+        process.nextTick(() => socket.resume());
+      });
+      socket.on('error', () => socket.destroy());
+      socket.setTimeout(30000, () => socket.destroy());
+    });
+    front.on('close', () => {
+      secure.close();
+      redirect.close();
+    });
+    return front;
+  };
+  return server;
+}
+
+const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
+
+// Certificate for the admin port: ADMIN_TLS_CERT/ADMIN_TLS_KEY (default admin-tls.crt/.key next to config.json, made
+// by the installers). Without those files a temporary self-signed one is made (it changes on every restart).
+function adminTls(env, configFile, extraNames) {
+  const dir = path.dirname(configFile);
+  const certFile = env.ADMIN_TLS_CERT || path.join(dir, 'admin-tls.crt');
+  const keyFile = env.ADMIN_TLS_KEY || path.join(dir, 'admin-tls.key');
+  try {
+    return { tls: { cert: fs.readFileSync(certFile), key: fs.readFileSync(keyFile) }, note: `certificate ${certFile}` };
+  } catch (err) {
+    if (env.ADMIN_TLS_CERT || env.ADMIN_TLS_KEY) {
+      throw new ConfigError(`cannot read ADMIN_TLS_CERT / ADMIN_TLS_KEY (${err.message})`);
+    }
+    return {
+      tls: createSelfSigned(defaultNames(extraNames)),
+      note: `temporary self-signed certificate (no ${certFile}; it changes on every restart)`,
+    };
+  }
 }
 
 function main(env = process.env) {
@@ -279,13 +348,58 @@ function main(env = process.env) {
     const modules = loadConfig(configFile, { allowEmpty: adminOn });
     const hosts = (env.ADMIN_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean);
     if (host !== '0.0.0.0' && host !== '::') hosts.push(host);
-    const admin = adminOn ? { file: adminFile, settings: adminSettings, hosts } : undefined;
+    if (env.ADMIN_PUBLIC_URL) {
+      try {
+        hosts.push(new URL(env.ADMIN_PUBLIC_URL).hostname);
+      } catch {
+        throw new ConfigError(`invalid ADMIN_PUBLIC_URL "${env.ADMIN_PUBLIC_URL}"`);
+      }
+    }
+    // ADMIN_TRUST_PROXY: 1 = a reverse proxy on this machine; or the proxies' addresses, comma separated.
+    let trustProxy = [];
+    const tp = (env.ADMIN_TRUST_PROXY || '').trim().toLowerCase();
+    if (tp === '1' || tp === 'true' || tp === 'yes') trustProxy = ['loopback'];
+    else if (tp && !/^(0|false|no)$/.test(tp)) {
+      trustProxy = tp.split(',').map((a) => a.trim()).filter(Boolean);
+      const bad = trustProxy.find((a) => a !== 'loopback' && !net.isIP(a));
+      if (bad) throw new ConfigError(`ADMIN_TRUST_PROXY: "${bad}" is not an IP address (use 1, or the proxies' addresses)`);
+    }
+
+    // The admin page in the browser, Webmin style: its own port (ADMIN_PORT), HTTPS unless ADMIN_TLS=off.
+    let adminPort;
+    if (env.ADMIN_PORT !== undefined && env.ADMIN_PORT !== '') {
+      adminPort = Number(env.ADMIN_PORT);
+      if (!Number.isInteger(adminPort) || adminPort < 1 || adminPort > 65535) {
+        throw new ConfigError(`invalid ADMIN_PORT "${env.ADMIN_PORT}"`);
+      }
+      if (adminPort === port) throw new ConfigError('ADMIN_PORT must differ from PORT');
+    }
+    const adminHost = env.ADMIN_HOST || '0.0.0.0';
+    const tlsOff = /^(off|0|false|no)$/i.test(env.ADMIN_TLS || '');
+    let tls;
+    if (adminOn && adminPort && !tlsOff) tls = adminTls(env, configFile, hosts);
+
+    const admin = adminOn ? { file: adminFile, settings: adminSettings, hosts, trustProxy } : undefined;
     const server = createApp({ modules, token, publicBaseUrl, configFile, admin });
     server.listen(port, host, () => {
       const ids = Object.keys(modules).join(', ') || '(none yet)';
       console.log(`listening on http://${host}:${port}, modules: ${ids}`);
       console.log(adminOn ? `admin page: ${publicBaseUrl.replace(/\/+$/, '')}/_admin/` : `admin page off (no password in ${adminFile})`);
     });
+    if (adminOn && adminPort) {
+      const adminServer = server.createAdminServer(tls && tls.tls);
+      adminServer.on('error', (err) => {
+        console.error(`admin port ${adminHost}:${adminPort}: ${err.message}`);
+        process.exit(1);
+      });
+      adminServer.listen(adminPort, adminHost, () => {
+        const scheme = tls ? 'https' : 'http';
+        console.log(`admin page for the browser: ${scheme}://${adminHost}:${adminPort}/ (${tls ? tls.note : 'plain HTTP'})`);
+        if (!tls && !LOOPBACK.has(adminHost) && !trustProxy.length) {
+          console.log('WARNING: ADMIN_TLS=off on a network address: the admin password crosses the network unencrypted');
+        }
+      });
+    }
     return server;
   } catch (err) {
     if (!(err instanceof ConfigError)) throw err;

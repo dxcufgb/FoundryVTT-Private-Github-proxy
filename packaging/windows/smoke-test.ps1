@@ -67,6 +67,15 @@ try {
     if ((Get-Content -LiteralPath "$data\config.json" -Raw) -notmatch '"smoke"') { throw 'the admin page did not write config.json' }
     Write-Output 'admin page logs in and saves modules'
 
+    # The browser admin port (the wizard's default): HTTPS with the self-signed certificate, firewall rule present.
+    $node = "$env:ProgramFiles\FoundryReleaseProxy-Node\node.exe"
+    $probe = "require('https').get({host:'localhost',port:8788,path:'/_admin/',rejectUnauthorized:false}," +
+        "r=>console.log(r.statusCode)).on('error',e=>console.log(e.message))"
+    $code = "$(& $node -e $probe)".Trim()
+    if ($code -ne '200') { throw "the admin port https://localhost:8788/_admin/ answered: $code" }
+    if (-not (Get-NetFirewallRule -Name 'FoundryReleaseProxy-Admin' -ErrorAction SilentlyContinue)) { throw 'firewall rule missing' }
+    Write-Output 'admin port answers over HTTPS'
+
     $unins = Get-ChildItem -LiteralPath $app -Filter 'unins*.exe' | Select-Object -First 1
     if (-not $unins) { throw 'uninstaller missing' }
     $p = Start-Process -FilePath $unins.FullName -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
@@ -74,6 +83,7 @@ try {
     Start-Sleep -Seconds 2
     if (Get-ScheduledTask -TaskName 'FoundryReleaseProxy' -ErrorAction SilentlyContinue) { throw 'scheduled task still registered' }
     if (Test-Path -LiteralPath $app) { throw "$app still exists after uninstall" }
+    if (Get-NetFirewallRule -Name 'FoundryReleaseProxy-Admin' -ErrorAction SilentlyContinue) { throw 'firewall rule left behind' }
     if (-not (Test-Path -LiteralPath "$data\env")) { throw 'a silent uninstall must keep the token and config' }
     Write-Output 'install and uninstall OK'
 }

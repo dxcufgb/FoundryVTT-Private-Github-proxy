@@ -12,6 +12,7 @@
 #       --module transformations=dxcufgb/FoundryVTT-ghpg-Transformations   # fully unattended
 #   sudo ./install.sh --check-update                    # exit 0 = up to date, 10 = newer release available
 #   sudo ./install.sh --set-admin-password              # turn on / change the password of the admin page (/_admin/)
+#   sudo ./install.sh --admin-web                       # admin page in any browser here: https://<this host>:8788/
 #   sudo ./install.sh --uninstall [--purge]             # remove service, updater, code and a Node.js installed here
 #
 # `./install.sh --help` lists every option. install.sh itself handles --install-node (download Node.js without asking),
@@ -48,7 +49,7 @@ for arg in "$@"; do
             ;;
         --uninstall) uninstall=yes; passthrough+=("$arg") ;;
         --check | --check-update | --update-now | --enable-auto-update | --disable-auto-update | \
-            --set-admin-password | --set-notify)
+            --set-admin-password | --set-notify | --admin-web | --no-admin-web | --renew-admin-cert)
             manage=yes; passthrough+=("$arg") ;;
         *) passthrough+=("$arg") ;;
     esac
@@ -60,6 +61,7 @@ if [[ $EUID -ne 0 ]]; then
     keep=FOUNDRY_PROXY_GITHUB_TOKEN,UPDATER_GITHUB_TOKEN,INSTALL_GITHUB_TOKEN,NODE_BIN,FOUNDRY_PROXY_ADMIN_PASSWORD
     keep+=,FOUNDRY_PROXY_NOTIFY_EMAILS,FOUNDRY_PROXY_SMTP_HOST,FOUNDRY_PROXY_SMTP_PORT,FOUNDRY_PROXY_SMTP_SECURITY
     keep+=,FOUNDRY_PROXY_SMTP_USER,FOUNDRY_PROXY_SMTP_PASSWORD,FOUNDRY_PROXY_SMTP_FROM
+    keep+=,FOUNDRY_PROXY_ADMIN_WEB,FOUNDRY_PROXY_ADMIN_PORT,FOUNDRY_PROXY_ADMIN_PUBLIC_URL
     exec sudo --preserve-env="$keep" "$0" "$@"
 fi
 if [[ ! -x "$HERE/scripts/install-service.sh" ]]; then

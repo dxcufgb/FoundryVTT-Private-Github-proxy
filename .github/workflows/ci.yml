@@ -99,6 +99,8 @@ jobs:
       FOUNDRY_PROXY_GITHUB_TOKEN: github_pat_ci_not_a_real_token
       # Not a secret: a throwaway password for the admin page of this test install.
       FOUNDRY_PROXY_ADMIN_PASSWORD: ci-admin-password
+      # serve the admin page on its own HTTPS port (8788), like Webmin
+      FOUNDRY_PROXY_ADMIN_WEB: "yes"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,7 +109,7 @@ jobs:
           persist-credentials: false
 
       - name: Install with the system Node.js
-        run: sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN,FOUNDRY_PROXY_ADMIN_PASSWORD ./install.sh --module demo=octo/demo
+        run: sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN,FOUNDRY_PROXY_ADMIN_PASSWORD,FOUNDRY_PROXY_ADMIN_WEB ./install.sh --module demo=octo/demo
 
       - name: Proxy answers
         run: |
@@ -142,6 +144,39 @@ jobs:
             sleep 1
           done
           exit 1
+
+      - name: Admin port serves HTTPS with its self-signed certificate
+        run: |
+          test "$(sudo stat -c '%a %U %G' /etc/foundry-release-proxy/admin-tls.key)" = "640 root foundry-proxy"
+          sudo grep -q '^ADMIN_PORT=8788$' /etc/foundry-release-proxy/env
+          code=000
+          for _ in $(seq 1 15); do
+            code="$(curl -sk -o /dev/null -w '%{http_code}' https://localhost:8788/_admin/ || true)"
+            [ "$code" = 200 ] && break
+            sleep 1
+          done
+          test "$code" = 200
+          # the certificate is the installed one, and plain http on that port is sent to https
+          sudo openssl x509 -noout -in /etc/foundry-release-proxy/admin-tls.crt -checkhost localhost | grep -q 'does match'
+          test "$(curl -s -o /dev/null -w '%{redirect_url}' http://localhost:8788/x)" = https://localhost:8788/_admin/
+          # reachable through this machine's own address too, and the module routes are not on that port
+          ip="$(hostname -I | awk '{print $1}')"
+          test "$(curl -sk -o /dev/null -w '%{http_code}' "https://$ip:8788/_admin/")" = 200
+          test "$(curl -sk -o /dev/null -w '%{http_code}' https://localhost:8788/demo/module.json)" = 404
+
+      - name: --no-admin-web and --admin-web
+        run: |
+          sudo ./install.sh --no-admin-web
+          sleep 2
+          if curl -sk -o /dev/null https://localhost:8788/; then echo "admin port still open"; exit 1; fi
+          sudo ./install.sh --admin-web
+          code=000
+          for _ in $(seq 1 15); do
+            code="$(curl -sk -o /dev/null -w '%{http_code}' https://localhost:8788/_admin/ || true)"
+            [ "$code" = 200 ] && break
+            sleep 1
+          done
+          test "$code" = 200
 
       - name: Uninstall
         run: |

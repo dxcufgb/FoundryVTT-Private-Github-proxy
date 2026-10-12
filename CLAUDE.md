@@ -9,7 +9,11 @@ installs new releases of the proxy itself.
 
 ## Layout
 - `src/server.js` – the HTTP proxy (everything except self-update). Exports `createApp`, `loadConfig`, `parseConfig`, `ConfigError`;
-  `main()` only runs when executed directly. Hands `/_admin` to `src/admin.js` when the admin page is on.
+  `main()` only runs when executed directly. Hands `/_admin` to `src/admin.js` when the admin page is on. With
+  `ADMIN_PORT` it also opens the browser admin port (`server.createAdminServer(tls)`): only admin routes, HTTPS (a TLS
+  first byte goes to https, anything else gets a 301 to https://), `/` → `/_admin/`.
+- `src/selfsigned.js` – ECDSA P-256 self-signed X.509 certificate built with `node:crypto` (DER by hand); CLI writes
+  `admin-tls.crt`/`.key` for the installers.
 - `src/admin.js` – the password-protected admin page (`/_admin/`, UI files in `src/admin-ui/`): JSON API to list/add/edit/
   delete modules (validated with `parseConfig`, written back to `config.json` in place), notification settings, password
   change. Settings in `admin.json` (`ADMIN_FILE`, default next to `CONFIG_FILE`): scrypt `passwordHash` + `notify`
@@ -23,7 +27,7 @@ installs new releases of the proxy itself.
   against `SHA256SUMS.txt`. Exit 0 = up to date, 10 = update available/downloaded, 1 = error. No fallback to the legacy
   names: a newer release without the new ones is an error. Installing is left to the scripts.
 - `test/server.test.js`, `test/updater.test.js`, `test/admin.test.js` (admin API, mailer against a fake SMTP server,
-  notifier) – `node:test` suites with an injected `fetchImpl` mock
+  notifier), `test/adminweb.test.js` (admin port over HTTPS, certificate, reverse-proxy headers) – `node:test` suites with an injected `fetchImpl` mock
   (no network).
 - `install.sh` – the single Linux entry point, at the top of the Linux archive (the one-liner of `dxcufgb/install` runs it
   as root): finds a system-wide Node (>= 18) or downloads the official Node 22 (SHA-256 checked) to
@@ -102,6 +106,11 @@ installs new releases of the proxy itself.
   change also the `X-CSRF-Token` and `Content-Type: application/json`; unknown `Host`/`Origin` → 403 (DNS rebinding).
   Login lockout after 5 failures. Strict CSP (no inline script/style: the UI only uses `textContent`). Neither the GitHub
   token, the password hash nor the SMTP password may appear in a response or a log line (tested).
+- **Admin port**: never serves module routes (they have no auth). Host allowlist = localhost, this machine's names and
+  interface addresses, `PUBLIC_BASE_URL`/`ADMIN_PUBLIC_URL` hosts, `ADMIN_HOSTS`. `X-Forwarded-*` only from a peer that
+  `ADMIN_TRUST_PROXY` names (`1` = loopback, or a list of IPs); anyone else could fake them past the lockout. No HSTS (self-signed certificates would become un-bypassable). The certificate files are
+  root-owned, readable by the service. Installers only change `ADMIN_*` lines in `env` on an explicit option
+  (`--admin-web`, `-AdminWeb`, first-install prompt).
 - The proxy's account may rewrite `config.json`/`admin.json` in place but never create files in the settings folder
   (Linux: files owned by the service user, `ReadWritePaths=` exactly these two; Windows: LOCAL SERVICE `(R,W)`, no
   delete). Root never parses `admin.json`: `auto-update.sh` runs `notify.js` as the service user via `setpriv`.

@@ -18,6 +18,7 @@
 // Secrets come from the environment, never from the command line, and are never printed.
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
@@ -33,6 +34,9 @@ const SESSION_MS = 12 * 60 * 60 * 1000;
 const MAX_SESSIONS = 20;
 const LOGIN_FAILURES = 5;
 const LOCKOUT_MS = 5 * 60 * 1000;
+// Across all addresses: more failed logins than this within GLOBAL_WINDOW_MS pause every login for that long.
+const GLOBAL_FAILURES = 50;
+const GLOBAL_WINDOW_MS = 15 * 60 * 1000;
 const COOKIE = 'frp_admin';
 const PREFIX = '/_admin';
 const SMTP_KEYS = ['host', 'port', 'security', 'user', 'password', 'from'];
@@ -256,6 +260,24 @@ function allowedHosts(publicBaseUrl, extra = []) {
   return hosts;
 }
 
+let machineCache = { at: 0, names: new Set() };
+/** This machine's host name (and name.local) and IP addresses: a browser on the LAN may use any of them. */
+function machineHosts(now) {
+  if (now - machineCache.at < 30000) return machineCache.names;
+  const names = new Set();
+  const host = os.hostname().toLowerCase();
+  names.add(host);
+  if (!host.includes('.')) names.add(`${host}.local`);
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list || []) {
+      const addr = a.address.replace(/%.*$/, '').toLowerCase();
+      names.add(a.family === 'IPv6' || a.family === 6 ? `[${addr}]` : addr);
+    }
+  }
+  machineCache = { at: now, names };
+  return names;
+}
+
 function hostOf(value) {
   try {
     return new URL(`http://${value}`).hostname.toLowerCase();
@@ -277,6 +299,7 @@ function createAdmin({
   checkRelease,
   validateModules,
   extraHosts = [],
+  trustProxy = false,
   log = console.log,
   mailer = sendMail,
   now = Date.now,
@@ -285,6 +308,9 @@ function createAdmin({
   const hosts = allowedHosts(publicBaseUrl, extraHosts);
   const sessions = new Map(); // id -> { csrf, expires }
   const failures = new Map(); // remote address -> { count, until }
+  let globalFailures = []; // times of recent failed logins, any address
+  // DNS rebinding sends the attacker's own name; this machine's names and addresses (LAN access) are fine.
+  const hostAllowed = (h) => hosts.has(h) || machineHosts(now()).has(h);
   const ui = Object.create(null);
   for (const [route, { file, type }] of Object.entries(UI_FILES)) {
     ui[route] = { body: fs.readFileSync(path.join(__dirname, 'admin-ui', file)), type };
@@ -325,9 +351,28 @@ function createAdmin({
     return { id, csrf };
   }
 
-  const cookie = (id, maxAge) =>
-    `${COOKIE}=${id}; Path=${PREFIX}; HttpOnly; SameSite=Strict; Max-Age=${maxAge}` +
-    (base.startsWith('https:') ? '; Secure' : '');
+  // Forwarded headers count only from a trusted proxy (ADMIN_TRUST_PROXY): one on this machine ("loopback", what
+  // ADMIN_TRUST_PROXY=1 means) or one of the listed addresses. Anyone else could fake them to dodge the lockout.
+  const trusted = trustProxy === true ? ['loopback'] : Array.isArray(trustProxy) ? trustProxy : [];
+  function fromProxy(req) {
+    if (!trusted.length) return false;
+    const peer = String(req.socket.remoteAddress || '').replace(/^::ffff:/i, '').toLowerCase();
+    if (trusted.includes('loopback') && (/^127\./.test(peer) || peer === '::1')) return true;
+    return trusted.includes(peer);
+  }
+
+  // HTTPS: the admin listener's own TLS, or a trusted reverse proxy that says so.
+  const isSecure = (req) =>
+    Boolean(req.socket.encrypted) || (fromProxy(req) && /^https$/i.test(String(req.headers['x-forwarded-proto'] || '')));
+
+  // Behind a trusted reverse proxy the client is the last address it added to X-Forwarded-For.
+  function clientIp(req) {
+    const fwd = fromProxy(req) ? String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean) : [];
+    return fwd.length ? fwd[fwd.length - 1] : req.socket.remoteAddress || '?';
+  }
+
+  const cookie = (req, id, maxAge) =>
+    `${COOKIE}=${id}; Path=${PREFIX}; HttpOnly; SameSite=Strict; Max-Age=${maxAge}` + (isSecure(req) ? '; Secure' : '');
 
   function moduleList() {
     const modules = getModules();
@@ -382,21 +427,23 @@ function createAdmin({
   }
 
   async function login(req, res, body) {
-    const ip = req.socket.remoteAddress || '?';
+    const ip = clientIp(req);
     const f = failures.get(ip);
-    if (f && f.until > now()) {
+    globalFailures = globalFailures.filter((t) => t > now() - GLOBAL_WINDOW_MS);
+    if ((f && f.until > now()) || globalFailures.length >= GLOBAL_FAILURES) {
       return sendJson(res, 429, { error: 'too many failed logins; try again in a few minutes' });
     }
     if (await verifyPassword(body.password, settings.passwordHash)) {
       failures.delete(ip);
       const s = newSession();
       log('admin: login');
-      return sendJson(res, 200, state(s.csrf), { 'Set-Cookie': cookie(s.id, SESSION_MS / 1000) });
+      return sendJson(res, 200, state(s.csrf), { 'Set-Cookie': cookie(req, s.id, SESSION_MS / 1000) });
     }
     // A lockout that has run out starts the count again.
     const count = (f && !f.until ? f.count : 0) + 1;
     failures.set(ip, { count, until: count >= LOGIN_FAILURES ? now() + LOCKOUT_MS : 0 });
     if (failures.size > 1000) failures.delete(failures.keys().next().value);
+    globalFailures.push(now());
     log(`admin: failed login from ${ip}`);
     return sendJson(res, 401, { error: 'wrong password' });
   }
@@ -409,7 +456,7 @@ function createAdmin({
         throw new HttpError(415, 'expected application/json');
       }
       const origin = req.headers.origin;
-      if (origin && origin !== 'null' && !hosts.has(hostOf(origin.replace(/^[a-z]+:\/\//i, '')))) {
+      if (origin && origin !== 'null' && !hostAllowed(hostOf(origin.replace(/^[a-z]+:\/\//i, '')))) {
         throw new HttpError(403, 'cross-origin request refused');
       }
       const text = await readBody(req);
@@ -430,7 +477,7 @@ function createAdmin({
 
     if (route === '/api/logout' && method === 'POST') {
       sessions.delete(s.id);
-      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': cookie('', 0) });
+      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': cookie(req, '', 0) });
     }
 
     if (route === '/api/modules' && method === 'POST') {
@@ -518,7 +565,7 @@ function createAdmin({
       sessions.clear();
       const fresh = newSession();
       log('admin: password changed');
-      return sendJson(res, 200, state(fresh.csrf), { 'Set-Cookie': cookie(fresh.id, SESSION_MS / 1000) });
+      return sendJson(res, 200, state(fresh.csrf), { 'Set-Cookie': cookie(req, fresh.id, SESSION_MS / 1000) });
     }
 
     throw new HttpError(404, 'not found');
@@ -530,7 +577,7 @@ function createAdmin({
 
     async handle(req, res, pathname) {
       if (!enabled()) return send(res, 404, 'not found', { 'Content-Type': 'text/plain; charset=utf-8' });
-      if (!hosts.has(hostOf(req.headers.host || ''))) {
+      if (!hostAllowed(hostOf(req.headers.host || ''))) {
         return send(res, 403, 'admin page: unknown host name (see ADMIN_HOSTS in the README)', {
           'Content-Type': 'text/plain; charset=utf-8',
         });

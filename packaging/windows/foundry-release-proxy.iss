@@ -16,7 +16,8 @@
 ;   set FOUNDRY_PROXY_SMTP_PASSWORD=...           (optional)
 ;   foundry-release-proxy-X.Y.Z-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /MODULEID=transformations /REPO=owner/name /AUTOUPDATE=1
 ;     [/NOTIFYEMAILS=a@example.com,b@example.com /SMTPHOST=smtp.example.com /SMTPPORT=587 /SMTPSECURITY=starttls
-;      /SMTPUSER=user /SMTPFROM=proxy@example.com]
+;      /SMTPUSER=user /SMTPFROM=proxy@example.com /ADMINWEB=1]
+; /ADMINWEB=1 (or the wizard's checkbox) serves the admin page to other computers at https://<this PC>:8788/.
 ; Silent uninstall keeps config and token; add /DELETEDATA=1 to remove C:\ProgramData\FoundryReleaseProxy as well.
 
 #ifndef AppVersion
@@ -85,6 +86,7 @@ var
   UpdatePage: TInputOptionWizardPage;
   AdminPage: TInputQueryWizardPage;
   SmtpPage: TInputQueryWizardPage;
+  AdminWebPage: TInputOptionWizardPage;
 
 function SetEnvironmentVariableW(Name, Value: String): Boolean;
   external 'SetEnvironmentVariableW@kernel32.dll stdcall';
@@ -286,6 +288,14 @@ begin
   SmtpPage.Values[3] := ExpandConstant('{param:SMTPUSER|}');
   SmtpPage.Values[4] := GetEnv('FOUNDRY_PROXY_SMTP_PASSWORD');
   SmtpPage.Values[5] := ExpandConstant('{param:SMTPFROM|}');
+
+  AdminWebPage := CreateInputOptionPage(SmtpPage.ID, 'Administration page in the browser',
+    'Reach the administration page from other computers',
+    'Like Webmin: the page is served on its own port with HTTPS (a self-signed certificate, so the browser warns ' +
+    'once) and Windows Firewall allows that port on private and domain networks. Without it the page is only ' +
+    'reachable on this PC at http://localhost:8787/_admin/.', False, False);
+  AdminWebPage.Add('Serve the administration page to other computers (https://<this PC>:8788/)');
+  AdminWebPage.Values[0] := ExpandConstant('{param:ADMINWEB|1}') = '1';
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -293,8 +303,10 @@ begin
   // Nothing to ask when the token and the config already exist (a re-install or update).
   Result := ((PageID = SettingsPage.ID) and FileExists(EnvFile) and FileExists(ConfigFile)) or
     // admin.json exists: its settings are changed on the admin page (or install-service.ps1 -SetAdminPassword)
-    (((PageID = AdminPage.ID) or (PageID = SmtpPage.ID)) and FileExists(AdminFile)) or
-    ((PageID = SmtpPage.ID) and not WantsNotify);
+    (((PageID = AdminPage.ID) or (PageID = SmtpPage.ID) or (PageID = AdminWebPage.ID)) and FileExists(AdminFile)) or
+    ((PageID = SmtpPage.ID) and not WantsNotify) or
+    // no password: no admin page to serve
+    ((PageID = AdminWebPage.ID) and (AdminPage.Values[0] = ''));
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -343,8 +355,8 @@ end;
 procedure SetAdminEnvironment(Clear: Boolean);
 var
   I: Integer;
-  Names: array[0..7] of String;
-  Values: array[0..7] of String;
+  Names: array[0..8] of String;
+  Values: array[0..8] of String;
 begin
   Names[0] := 'FOUNDRY_PROXY_ADMIN_PASSWORD'; Values[0] := AdminPage.Values[0];
   Names[1] := 'FOUNDRY_PROXY_NOTIFY_EMAILS'; Values[1] := Trim(AdminPage.Values[2]);
@@ -354,10 +366,12 @@ begin
   Names[5] := 'FOUNDRY_PROXY_SMTP_USER'; Values[5] := Trim(SmtpPage.Values[3]);
   Names[6] := 'FOUNDRY_PROXY_SMTP_PASSWORD'; Values[6] := SmtpPage.Values[4];
   Names[7] := 'FOUNDRY_PROXY_SMTP_FROM'; Values[7] := Trim(SmtpPage.Values[5]);
-  for I := 0 to 7 do
+  Names[8] := 'FOUNDRY_PROXY_ADMIN_WEB'; Values[8] := '';
+  if AdminWebPage.Values[0] then Values[8] := '1';
+  for I := 0 to 8 do
   begin
     // the mail server settings only matter with recipients
-    if Clear or ((I >= 2) and not WantsNotify) then Values[I] := '';
+    if Clear or ((I >= 2) and (I <= 7) and not WantsNotify) then Values[I] := '';
     SetEnvironmentVariableW(Names[I], Values[I]);
   end;
 end;

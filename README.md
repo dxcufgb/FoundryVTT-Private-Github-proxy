@@ -570,6 +570,11 @@ are on.
   `C:\ProgramData\FoundryReleaseProxy\logs\proxy.log`.
 - Service won't start: `journalctl -u foundry-release-proxy -n 50`; it prints `refusing to start: ...` for a missing
   token or malformed config.
+- Service won't start with `Changing to the requested working directory failed: Permission denied` (`status=200/CHDIR`)
+  or the updater says `Cannot find module '/opt/foundry-release-proxy/src/notify.js'`: an install from a version before
+  1.4.1 ran with a strict root umask (e.g. `077`) and left the code folder unreadable for the service user. Installing
+  1.4.1 or newer fixes the modes; until then: `sudo chmod -R u=rwX,go=rX /opt/foundry-release-proxy` and
+  `sudo systemctl restart foundry-release-proxy`.
 - `404` for a module that exists: the repo has no published (non-draft, non-prerelease) release, the release lacks the
   assets, or the token has no access to that repo.
 - `502`: GitHub rejected the request; the log line shows the module id and status (`401` expired/invalid token).

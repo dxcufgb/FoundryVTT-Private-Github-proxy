@@ -122,7 +122,8 @@ installs new releases of the proxy itself.
   `GITHUB_TOKEN` from `env` or a separate `updater-token` (root 600 / Administrators+SYSTEM only); it goes
   only to `api.github.com` and is never on a command line or in a log. Downloads must match `SHA256SUMS.txt`;
   only strictly newer, non-draft, non-prerelease versions install. Root/SYSTEM must never run code a
-  non-admin account can change: the Linux code folder stays `root:root`, the Windows one stays under
+  non-admin account can change: the Linux code folder stays `root:root` with explicit
+  modes (`chmod -R u=rwX,go=rX`, never left to root's umask, which can make it unreadable for the service), the Windows one stays under
   Program Files (admin-only write). Upgrades keep `config.json` and `env`; a failed install puts the
   previous code back.
 - `main` is protected by the "Protect main" ruleset: changes go through pull requests, merged with squash; release tags

@@ -111,6 +111,8 @@ download_node() {
     mkdir -p "$NODE_DIR"
     tar -xJf "$tmp/$name" -C "$NODE_DIR" --strip-components=1
     chown -R root:root "$NODE_DIR"
+    # the service user must be able to run it, whatever root's umask is
+    chmod -R u=rwX,go=rX "$NODE_DIR"
     rm -rf "$tmp"
     trap - EXIT
     echo "Installed ${name%.tar.xz} to $NODE_DIR."

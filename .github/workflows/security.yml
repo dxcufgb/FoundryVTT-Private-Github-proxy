@@ -97,9 +97,9 @@ jobs:
             --config p/python --config p/javascript --config p/security-audit \
             --config p/secrets --config p/github-actions --config r/bash \
             --json-output="$report" || status=$?
-          jq -r '.results[] | "::error file=\(.path),line=\(.start.line),endLine=\(.end.line),title=\(.check_id)::\(.extra.message | gsub("[\r\n%]"; " "))"' "$report" || true
           # GitHub shows only the first few annotations of a step; this one lists every finding
           jq -r 'select(.results | length > 0) | "::error title=Semgrep: \(.results | length) finding(s)::" + ([.results[] | "\(.check_id) \(.path):\(.start.line)"] | join(" ; "))' "$report" || true
+          jq -r '.results[] | "::error file=\(.path),line=\(.start.line),endLine=\(.end.line),title=\(.check_id)::\(.extra.message | gsub("[\r\n%]"; " "))"' "$report" || true
           exit "$status"
 
   deps:

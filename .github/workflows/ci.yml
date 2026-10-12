@@ -187,7 +187,8 @@ jobs:
       - name: Install again with a downloaded Node.js
         env:
           NODE_BIN: /nonexistent/node
-        run: sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN,NODE_BIN ./install.sh --install-node --module demo=octo/demo
+        # under a strict root umask: the code and Node.js folders must still be readable for the service user
+        run: sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN,NODE_BIN bash -c 'umask 077 && exec ./install.sh --install-node --module demo=octo/demo'
 
       - name: Proxy answers with the downloaded Node.js
         run: |
@@ -198,6 +199,10 @@ jobs:
             sleep 1
           done
           grep -q 'ExecStart=/opt/foundry-release-proxy-node/bin/node ' /etc/systemd/system/foundry-release-proxy.service
+          for p in /opt/foundry-release-proxy /opt/foundry-release-proxy/src /opt/foundry-release-proxy-node/bin/node; do
+            test "$(stat -c '%a %U' "$p")" = "755 root"
+          done
+          sudo -u foundry-proxy test -r /opt/foundry-release-proxy/src/notify.js
           test "$code" = 404
 
   windows-installer:

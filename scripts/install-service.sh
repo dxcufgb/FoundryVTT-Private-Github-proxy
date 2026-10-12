@@ -317,6 +317,7 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 UNIT
+    chmod 644 "$UPDATE_UNIT" "$UPDATE_TIMER"  # explicit: root's umask may be strict
     systemctl daemon-reload
     systemctl enable --now "${SERVICE_NAME}-update.timer" >/dev/null
 }
@@ -548,6 +549,7 @@ ${caps}
 [Install]
 WantedBy=multi-user.target
 UNIT
+    chmod 644 "$UNIT_FILE"  # explicit: root's umask may be strict
 }
 
 # Where the admin page is, for the end of a run.
@@ -637,7 +639,9 @@ if [[ "$SRC_DIR" != "$(readlink -f "$APP_DIR" 2>/dev/null || echo "$APP_DIR")" ]
         if [[ -f "$SRC_DIR/$f" ]]; then cp "$SRC_DIR/$f" "$APP_DIR/"; fi
     done
     chown -R root:root "$APP_DIR"
-    chmod -R go-w "$APP_DIR"
+    # Explicit modes, whatever root's umask was (a umask of 077 left the folder unreadable for the service user, so
+    # the service failed with "CHDIR: Permission denied"): root may write, everyone may read and enter.
+    chmod -R u=rwX,go=rX "$APP_DIR"
 fi
 
 # Config + env: created once, never overwritten.

@@ -317,6 +317,7 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 UNIT
+    chmod 644 "$UPDATE_UNIT" "$UPDATE_TIMER"  # explicit: root's umask may be strict
     systemctl daemon-reload
     systemctl enable --now "${SERVICE_NAME}-update.timer" >/dev/null
 }
@@ -548,6 +549,7 @@ ${caps}
 [Install]
 WantedBy=multi-user.target
 UNIT
+    chmod 644 "$UNIT_FILE"  # explicit: root's umask may be strict
 }
 
 # Where the admin page is, for the end of a run.

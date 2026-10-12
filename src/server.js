@@ -260,6 +260,7 @@ function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl
     return send(res, 404, 'not found');
   }
 
+  // Runs a route handler, turning a thrown/rejected error into the 500 response.
   const wrap = (fn) => (req, res) => {
     fn(req, res).catch((err) => {
       log(`internal error: ${err.message}`);
@@ -321,6 +322,7 @@ function adminTls(env, configFile, extraNames) {
   }
 }
 
+// Reads the environment, starts the proxy (and, if configured, the browser admin port) and returns the HTTP server.
 function main(env = process.env) {
   try {
     const token = env.GITHUB_TOKEN;

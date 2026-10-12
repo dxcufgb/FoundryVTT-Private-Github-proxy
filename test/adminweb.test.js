@@ -71,6 +71,7 @@ function request(scheme, port, pathname, { method = 'GET', headers = {}, body, c
   });
 }
 
+// Logs in with the test password (or opts.password); opts.headers/ca are passed through to request().
 const login = (scheme, port, opts = {}) =>
   request(scheme, port, '/_admin/api/login', {
     method: 'POST',

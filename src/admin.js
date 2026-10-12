@@ -354,6 +354,7 @@ function createAdmin({
   // Forwarded headers count only from a trusted proxy (ADMIN_TRUST_PROXY): one on this machine ("loopback", what
   // ADMIN_TRUST_PROXY=1 means) or one of the listed addresses. Anyone else could fake them to dodge the lockout.
   const trusted = trustProxy === true ? ['loopback'] : Array.isArray(trustProxy) ? trustProxy : [];
+  // True when the request's peer address is a trusted reverse proxy.
   function fromProxy(req) {
     if (!trusted.length) return false;
     const peer = String(req.socket.remoteAddress || '').replace(/^::ffff:/i, '').toLowerCase();
@@ -371,6 +372,7 @@ function createAdmin({
     return fwd.length ? fwd[fwd.length - 1] : req.socket.remoteAddress || '?';
   }
 
+  // The session cookie; Secure when the request is HTTPS (directly, or reported by a trusted proxy).
   const cookie = (req, id, maxAge) =>
     `${COOKIE}=${id}; Path=${PREFIX}; HttpOnly; SameSite=Strict; Max-Age=${maxAge}` + (isSecure(req) ? '; Secure' : '');
 
@@ -426,6 +428,7 @@ function createAdmin({
     return raw;
   }
 
+  // Checks the password, with a per-address lockout and a global pause once too many addresses fail at once.
   async function login(req, res, body) {
     const ip = clientIp(req);
     const f = failures.get(ip);

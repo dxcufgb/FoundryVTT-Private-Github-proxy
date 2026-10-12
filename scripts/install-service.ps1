@@ -451,13 +451,14 @@ if ($Uninstall) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     }
+    # Before the files: the Inno uninstaller runs from $AppDir, so removing that folder can fail below.
+    Get-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     foreach ($dir in @($AppDir, $BackupDir, (Join-Path $DataDir 'update-tmp'))) {
         if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
     }
     foreach ($file in @($UpdaterTokenFile, $AutoConf)) {
         if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
     }
-    Get-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     Write-ProxyLog "Removed the $TaskName tasks, the updater and $AppDir."
     Write-ProxyLog "Kept $DataDir (config.json, env with the token, logs); delete it by hand if wanted."
     exit 0

@@ -43,7 +43,7 @@ installs new releases of the proxy itself.
   hand; files are attached afterwards). It runs `ci.yml` (workflow_call), the build, the Windows installer, then
   publishes (draft first; a leftover draft is replaced, a moved tag stops it).
 - `.github/ruleset-protect-main.json` – the "Protect main" ruleset (squash only, 1 approval, required CI checks), the same
-  as in the other FoundryVTT repos; importable only on a plan that allows rulesets on private repos. Keep its check names in
+  as in the other FoundryVTT repos and enforced by GitHub (the account has GitHub Pro). Keep its check names in
   step with the job names in `ci.yml` (only jobs that run on every PR belong in it). `.github/` also holds the PR and issue
   templates and `SECURITY.md`.
 - `config.example.json`, `.env.example` – templates. Real `config.json`/`.env` are gitignored.
@@ -100,8 +100,8 @@ installs new releases of the proxy itself.
   non-admin account can change: the Linux code folder stays `root:root`, the Windows one stays under
   Program Files (admin-only write). Upgrades keep `config.json` and `env`; a failed install puts the
   previous code back.
-- `main` is protected by convention (and by the ruleset where the plan allows): changes go through pull requests, merged
-  with squash.
+- `main` is protected by the "Protect main" ruleset: changes go through pull requests, merged with squash; release tags
+  `v*` are protected by the "Protect release tags" ruleset.
 - **Versions**: the version comes from the release tag; nobody bumps `package.json` (it keeps the last release's
   version). The build stamps the tag's version into the built copy, which is what the updater compares.
 - The Windows installer must not duplicate `install-service.ps1`: the wizard only collects answers, writes `config.json`

@@ -380,17 +380,14 @@ start it with `[extend]` `useDefault = true` so the default rules stay on).
 
 ## Branch protection
 
-`main` is meant to be changed only through pull requests: squash merge only, one approval, the tests, shellcheck,
-PSScriptAnalyzer, the `install.sh` run and the Windows installer build must pass, and nobody can delete `main` or
-force-push it (the repository admin can bypass through a pull request). It is the same rule as in the other
-FoundryVTT repositories and is kept in `.github/ruleset-protect-main.json`.
-
-GitHub only enforces rulesets and branch protection on **private** repositories with a paid plan (GitHub Pro or a
-team/organization plan); on the free plan the API answers "Upgrade to GitHub Pro or make this repository public". Once that
-is available: *Settings → Rules → Rulesets → New ruleset → Import a ruleset* and pick the file. Also set *Settings →
-General → Pull Requests* to squash merging only, "Automatically delete head branches" and "Always suggest updating pull
-request branches", and turn on *Settings → Security → Private vulnerability reporting*. Until then the same rules hold
-by convention: open a pull request, wait for CI, squash merge.
+`main` can only be changed through pull requests: squash merge only, one approval, and the tests, shellcheck,
+PSScriptAnalyzer, the `install.sh` run, the Windows installer build and the three Security checks (gitleaks, Semgrep,
+dependencies) must pass. Nobody can delete `main` or force-push it; the repository admin can bypass the rules only by
+merging a pull request. Release tags `v*` cannot be moved or deleted (the admin can, to clean up a broken release). These
+are the same rulesets as in the other FoundryVTT repositories, enforced by GitHub (GitHub Pro); the branch ruleset is also
+kept in `.github/ruleset-protect-main.json` (*Settings → Rules → Rulesets → Import a ruleset* to re-create it). Pull
+requests are squash merged, the branch is deleted afterwards, and Dependabot alerts, malware alerts and security updates
+are on.
 
 ## Troubleshooting
 

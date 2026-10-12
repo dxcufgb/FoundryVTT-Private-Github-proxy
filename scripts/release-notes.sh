@@ -3,8 +3,8 @@
 #
 #   ./scripts/release-notes.sh VERSION OWNER/REPO > notes.md
 #
-# release.yml passes the file to `gh release create --notes-file ... --generate-notes`, so GitHub's list of merged pull
-# requests follows it. The asset names must match scripts/build-release.sh and the installer step in release.yml.
+# release.yml puts it in front of GitHub's generated notes (the list of merged pull requests), or in front of the notes
+# of a release published by hand. The file names must match scripts/build-release.sh.
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
@@ -13,8 +13,8 @@ if [[ $# -ne 2 ]]; then
 fi
 VERSION="$1"
 REPO="$2"
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "version '$VERSION' is not MAJOR.MINOR.PATCH" >&2
+if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+    echo "version '$VERSION' is not MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-PRERELEASE" >&2
     exit 1
 fi
 if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
@@ -23,6 +23,7 @@ if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
 fi
 
 TAG="v$VERSION"
+NAME="foundry-release-proxy-$VERSION"
 BASE="https://github.com/$REPO/releases"
 DL="$BASE/download/$TAG"
 LATEST="$BASE/latest/download"
@@ -32,29 +33,35 @@ cat <<EOF
 
 | OS | File | This release | Always the latest |
 | --- | --- | --- | --- |
-| Windows 10/11 (x64) | Installer, brings its own Node.js | [FoundryReleaseProxy-Setup-$VERSION.exe]($DL/FoundryReleaseProxy-Setup-$VERSION.exe) ([sha256]($DL/FoundryReleaseProxy-Setup-$VERSION.exe.sha256)) | [FoundryReleaseProxy-Setup.exe]($LATEST/FoundryReleaseProxy-Setup.exe) |
-| Windows (manual / PowerShell) | Archive | [foundry-release-proxy-$VERSION.zip]($DL/foundry-release-proxy-$VERSION.zip) | [foundry-release-proxy-windows.zip]($LATEST/foundry-release-proxy-windows.zip) |
-| Linux / Raspberry Pi (x64, arm64, armv7) | Archive with \`install.sh\` | [foundry-release-proxy-$VERSION.tar.gz]($DL/foundry-release-proxy-$VERSION.tar.gz) | [foundry-release-proxy-linux.tar.gz]($LATEST/foundry-release-proxy-linux.tar.gz) |
+| Windows 10/11 (x64) | Setup wizard, brings its own Node.js | [$NAME-setup.exe]($DL/$NAME-setup.exe) | [foundry-release-proxy-setup.exe]($LATEST/foundry-release-proxy-setup.exe) |
+| Windows (manual / PowerShell) | Archive | [$NAME-windows.zip]($DL/$NAME-windows.zip) | [foundry-release-proxy-windows.zip]($LATEST/foundry-release-proxy-windows.zip) |
+| Linux / Raspberry Pi (x64, arm64, armv7) | Archive with \`install.sh\` | [$NAME-linux.tar.gz]($DL/$NAME-linux.tar.gz) | [foundry-release-proxy-linux.tar.gz]($LATEST/foundry-release-proxy-linux.tar.gz) |
 
-Checksums of the archives: [SHA256SUMS]($DL/SHA256SUMS).
-The repository is private, so the links only work when you are signed in to GitHub with access to it;
-on a headless machine use \`gh\` (below).
+Checksums of all files: [SHA256SUMS.txt]($DL/SHA256SUMS.txt).
+The repository is private, so the links only work when you are signed in to GitHub with access to it.
 
 ### Linux / Raspberry Pi
 
 \`\`\`sh
-gh release download $TAG --repo $REPO --pattern 'foundry-release-proxy-$VERSION.tar.gz' --pattern SHA256SUMS
-sha256sum --check --ignore-missing SHA256SUMS
-tar -xzf foundry-release-proxy-$VERSION.tar.gz
-cd foundry-release-proxy-$VERSION
+curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s foundry-release-proxy
+\`\`\`
+
+It asks for a fine-grained token with read-only *Contents* access to this repository. Or by hand:
+
+\`\`\`sh
+gh release download $TAG --repo $REPO --pattern '$NAME-linux.tar.gz' --pattern SHA256SUMS.txt
+sha256sum --check --ignore-missing SHA256SUMS.txt
+tar xzf $NAME-linux.tar.gz
+cd $NAME
 sudo ./install.sh
 \`\`\`
 
+\`sudo ./install.sh --help\` lists the options (non-interactive install, automatic updates, update check, uninstall).
+
 ### Windows
 
-Run \`FoundryReleaseProxy-Setup-$VERSION.exe\` and follow the wizard (it asks for administrator rights). Running it over an
-existing install upgrades it and keeps the token and \`config.json\`. Unattended install and the manual PowerShell route are
-in the README.
+Run \`$NAME-setup.exe\` and follow the wizard (it asks for administrator rights). Running it over an existing install
+upgrades it and keeps the token and \`config.json\`. Unattended install and the manual PowerShell route are in the README.
 
 Installs with automatic updates turned on pick this release up within a day.
 EOF

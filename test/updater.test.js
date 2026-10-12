@@ -44,10 +44,20 @@ function mockFetch(routes) {
   return fn;
 }
 
-/** Build release metadata with archive and checksum assets, allowing field overrides. */
+/** Release file names of 1.1.1 and older, still attached to every release for their updaters. */
+function legacyNames(v) {
+  return [`foundry-release-proxy-${v}.tar.gz`, `foundry-release-proxy-${v}.zip`, 'SHA256SUMS'];
+}
+
+/** Build release metadata with archive and checksum assets (new names first, then legacy), allowing overrides. */
 function release(tag, extra = {}) {
   const v = tag.replace(/^v/, '');
-  const names = [`foundry-release-proxy-${v}.tar.gz`, `foundry-release-proxy-${v}.zip`, 'SHA256SUMS'];
+  const names = [
+    `foundry-release-proxy-${v}-linux.tar.gz`,
+    `foundry-release-proxy-${v}-windows.zip`,
+    'SHA256SUMS.txt',
+    ...legacyNames(v),
+  ];
   return {
     tag_name: tag,
     draft: false,
@@ -61,7 +71,9 @@ function release(tag, extra = {}) {
 function releaseRoutes(tag, archive, { sumsFor = archive } = {}) {
   const rel = release(tag);
   const v = tag.replace(/^v/, '');
-  const sums = `${sha(sumsFor)}  foundry-release-proxy-${v}.tar.gz\n${'0'.repeat(64)}  foundry-release-proxy-${v}.zip\n`;
+  const sums =
+    `${sha(sumsFor)}  foundry-release-proxy-${v}-linux.tar.gz\n${'0'.repeat(64)}  foundry-release-proxy-${v}-windows.zip\n` +
+    `${'1'.repeat(64)}  foundry-release-proxy-${v}.tar.gz\n`;
   const routes = {
     [LATEST]: () => json(rel),
     [rel.assets[0].url]: () => redirect('https://objects.example/signed-archive'),
@@ -113,14 +125,22 @@ test('token file parsing', () => {
   assert.equal(parseTokenFile(''), '');
 });
 
-test('asset selection picks the archive of the requested format and SHA256SUMS', () => {
+test('asset selection picks the new-style archive of the requested format and SHA256SUMS.txt', () => {
   const rel = release('v1.2.0');
-  assert.equal(selectAssets(rel, 'tar.gz').archive.name, 'foundry-release-proxy-1.2.0.tar.gz');
-  assert.equal(selectAssets(rel, 'zip').archive.name, 'foundry-release-proxy-1.2.0.zip');
-  assert.equal(selectAssets(rel, 'zip').sums.name, 'SHA256SUMS');
+  assert.equal(selectAssets(rel, 'tar.gz').archive.name, 'foundry-release-proxy-1.2.0-linux.tar.gz');
+  assert.equal(selectAssets(rel, 'zip').archive.name, 'foundry-release-proxy-1.2.0-windows.zip');
+  assert.equal(selectAssets(rel, 'zip').sums.name, 'SHA256SUMS.txt');
   assert.throws(() => selectAssets({ ...rel, assets: rel.assets.slice(1) }, 'tar.gz'), /no asset/);
-  assert.throws(() => selectAssets({ ...rel, assets: rel.assets.slice(0, 2) }, 'tar.gz'), /SHA256SUMS/);
+  assert.throws(() => selectAssets({ ...rel, assets: rel.assets.slice(0, 2) }, 'tar.gz'), /SHA256SUMS\.txt/);
   assert.throws(() => selectAssets(rel, 'exe'), /unknown archive format/);
+});
+
+test('asset selection does not fall back to the names of 1.1.1 and older', () => {
+  const old = release('v1.1.1');
+  old.assets = old.assets.slice(3);
+  assert.deepEqual(old.assets.map((a) => a.name), legacyNames('1.1.1'));
+  assert.throws(() => selectAssets(old, 'tar.gz'), /no asset foundry-release-proxy-1\.1\.1-linux\.tar\.gz; nothing installed/);
+  assert.throws(() => selectAssets(old, 'zip'), /no asset foundry-release-proxy-1\.1\.1-windows\.zip/);
 });
 
 test('check: only a strictly newer, non-prerelease release is an update', async () => {
@@ -163,7 +183,7 @@ test('download: redirect is followed without the token and the checksum is verif
   const f = mockFetch(routes);
   const dir = tmpdir();
   const file = await createUpdater({ token: TOKEN, fetchImpl: f, log: () => {} }).download(rel, 'tar.gz', dir);
-  assert.equal(path.basename(file), 'foundry-release-proxy-1.1.0.tar.gz');
+  assert.equal(path.basename(file), 'foundry-release-proxy-1.1.0-linux.tar.gz');
   assert.deepEqual(fs.readFileSync(file), archive);
 
   for (const call of f.calls) {
@@ -187,11 +207,11 @@ test('download: a checksum mismatch is refused and nothing is written', async ()
   fs.rmSync(dir, { recursive: true });
 });
 
-test('download: missing SHA256SUMS entry, non-HTTPS redirect, oversized body and foreign asset URLs are refused', async () => {
+test('download: missing SHA256SUMS.txt entry, non-HTTPS redirect, oversized body and foreign asset URLs are refused', async () => {
   const dir = tmpdir();
   const archive = Buffer.from('x');
 
-  // zip has a zero hash in SHA256SUMS -> mismatch; drop its line entirely -> no entry.
+  // zip has a zero hash in SHA256SUMS.txt -> mismatch; drop its line entirely -> no entry.
   {
     const { rel, routes } = releaseRoutes('v1.1.0', archive);
     routes['https://objects.example/signed-sums'] = () => new Response(`${sha(archive)}  other.tar.gz\n`);
@@ -283,7 +303,7 @@ test('cli: --download writes the verified archive and prints its path', async ()
     log: (l) => out.push(l),
   });
   assert.equal(code, EXIT_UPDATE);
-  const file = path.join(outDir, 'foundry-release-proxy-1.1.0.tar.gz');
+  const file = path.join(outDir, 'foundry-release-proxy-1.1.0-linux.tar.gz');
   assert.ok(out.includes(`ARCHIVE=${file}`));
   assert.ok(out.includes('VERSION=1.1.0'));
   assert.deepEqual(fs.readFileSync(file), archive);

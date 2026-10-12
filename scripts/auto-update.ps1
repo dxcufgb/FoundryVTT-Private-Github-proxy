@@ -7,7 +7,7 @@ Normally run as SYSTEM by the scheduled task "FoundryReleaseProxy-Update" that
 `install-service.ps1 -EnableAutoUpdate` registers; `install-service.ps1 -Check` and `-UpdateNow` run it by hand.
 
   auto-update.ps1 -Check   report whether a newer release exists (exit 0 = up to date, 10 = update available)
-  auto-update.ps1 -Apply   download, verify (SHA256SUMS), install it through install-service.ps1 -Upgrade and
+  auto-update.ps1 -Apply   download, verify (SHA256SUMS.txt), install it through install-service.ps1 -Upgrade and
                            restart the proxy; on any failure the previous install is put back
 
 The release lookup, version comparison, download and checksum check are in src\updater.js; this script only locks,

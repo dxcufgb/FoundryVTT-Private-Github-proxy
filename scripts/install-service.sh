@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Installs (or removes) the proxy as a systemd service that starts on boot and
-# restarts automatically if it crashes.
+# restarts automatically if it crashes. ./install.sh at the top of the repository / release archive is the entry
+# point (it also sets up Node.js) and passes its options on to this script; both accept the options below.
 #
 #   sudo ./scripts/install-service.sh                       # install or update the code, then (re)start
 #   sudo ./scripts/install-service.sh --auto-update         # same, and turn on automatic updates
 #   sudo ./scripts/install-service.sh --enable-auto-update  # turn automatic updates on for an existing install
 #   sudo ./scripts/install-service.sh --disable-auto-update # turn them off again
-#   sudo ./scripts/install-service.sh --check               # is a newer release available? (report only)
+#   sudo ./scripts/install-service.sh --check-update        # is a newer release available? (report only; also --check)
 #   sudo ./scripts/install-service.sh --update-now          # install the latest release now
-#   sudo ./scripts/install-service.sh --uninstall           # stop + remove service, updater and code (keeps /etc config)
+#   sudo ./scripts/install-service.sh --uninstall [--purge] # stop + remove service, updater and code (--purge: also config)
 #   sudo ./scripts/install-service.sh --module ID=OWNER/REPO  # first install: put this module in config.json (repeatable)
 #
 # Layout (the config survives code updates; re-running this script never overwrites it):
@@ -20,8 +21,8 @@
 #   /etc/foundry-release-proxy/updater-token      only if the updater has its own token (root, 600)
 #
 # Automatic updates are off unless asked for. The tokens are taken from a prompt or from the environment
-# (FOUNDRY_PROXY_GITHUB_TOKEN for the proxy, UPDATER_GITHUB_TOKEN for the updater), never from the command line.
-# ./install.sh in the repository root wraps this script and also sets up Node.js when the system has none.
+# (FOUNDRY_PROXY_GITHUB_TOKEN for the proxy, UPDATER_GITHUB_TOKEN for the updater, INSTALL_GITHUB_TOKEN from the
+# one-line installer as a candidate updater token), never from the command line.
 #
 # Logs:    journalctl -u foundry-release-proxy -f      (updates: journalctl -u foundry-release-proxy-update)
 # Control: sudo systemctl {start|stop|restart|status} foundry-release-proxy
@@ -39,9 +40,42 @@ UPDATER_TOKEN_FILE="$CONF_DIR/updater-token"
 UPDATE_REPO="dxcufgb/FoundryVTT-Private-Github-proxy"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Print command usage to stderr and exit with status 2.
+# Print the option list (common set first, then this installer's own options).
+print_usage() {
+    cat <<'USAGE'
+Usage: sudo ./install.sh [options]      (or: sudo ./scripts/install-service.sh [options])
+
+  (no options)             install or upgrade in place, interactive (asks for what it needs)
+  --yes, -y                non-interactive: no questions; missing required settings -> clear error
+  --auto-update            turn automatic updates on as part of this install
+  --no-auto-update         turn automatic updates off as part of this install
+  --enable-auto-update     turn automatic updates on for an existing install, nothing else
+  --disable-auto-update    turn automatic updates off for an existing install, nothing else
+  --check-update           only check: exit 0 = up to date, 10 = newer release available, other = error
+  --update-now             install the latest release now (same path as the daily updater)
+  --uninstall [--purge]    remove (keep / also delete settings and data)
+  --help, -h               this list
+
+Options of this installer:
+  --module ID=OWNER/REPO   first install: put this module in config.json (repeatable)
+  --install-node           (install.sh) download the official Node.js 22 without asking if none is usable
+  --no-install-node        (install.sh) never download Node.js
+  --check                  same as --check-update
+  --upgrade                non-interactive re-install that keeps every setting (used by the updater)
+
+Environment (tokens are never taken as arguments and never logged):
+  FOUNDRY_PROXY_GITHUB_TOKEN  the proxy's token (Contents: read-only on the module repositories);
+                              needed with --yes on a first install
+  UPDATER_GITHUB_TOKEN        a separate token for the updater (Contents: read-only on this repository)
+  INSTALL_GITHUB_TOKEN        set by the one-line installer; stored as the updater token when automatic updates
+                              are turned on (asked first when interactive)
+  NODE_BIN                    the node binary to use
+USAGE
+}
+
+# Print the option list to stderr and exit with status 2 (bad usage).
 usage() {
-    sed -n '4,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    print_usage >&2
     exit 2
 }
 
@@ -49,6 +83,8 @@ orig_args=("$@")
 action=install
 auto_update=""     # yes/no when asked for on the command line, empty = keep the current choice
 upgrade=no         # --upgrade: non-interactive, used by the updater
+assume_yes=no      # --yes: non-interactive, missing required settings are an error
+purge=no           # --purge (with --uninstall): also delete the settings and the service user
 modules=()         # ID=OWNER/REPO entries for a new config.json
 while [[ $# -gt 0 ]]; do
     arg="$1"
@@ -62,23 +98,29 @@ while [[ $# -gt 0 ]]; do
         --auto-update) auto_update=yes ;;
         --no-auto-update) auto_update=no ;;
         --upgrade) upgrade=yes ;;
+        --yes | -y) assume_yes=yes ;;
         --enable-auto-update) action=enable ;;
         --disable-auto-update) action=disable ;;
-        --check) action=check ;;
+        --check | --check-update) action=check ;;
         --update-now) action=update ;;
         --uninstall) action=uninstall ;;
-        -h | --help) usage ;;
+        --purge) purge=yes ;;
+        -h | --help) print_usage; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; usage ;;
     esac
 done
+if [[ "$purge" == yes && "$action" != uninstall ]]; then
+    echo "--purge only goes with --uninstall" >&2
+    usage
+fi
 
 if [[ $EUID -ne 0 ]]; then
     echo "Please run with sudo: sudo $0 ${orig_args[*]}" >&2
     exit 1
 fi
 
-# Return success only for a terminal session outside an unattended upgrade.
-interactive() { [[ "$upgrade" == no && -t 0 ]]; }
+# Return success only for a terminal session outside an unattended upgrade or --yes.
+interactive() { [[ "$upgrade" == no && "$assume_yes" == no && -t 0 ]]; }
 
 # KEY=value from auto-update.conf without sourcing it.
 setting() {
@@ -100,7 +142,13 @@ if [[ "$action" == uninstall ]]; then
     rm -f "$AUTO_CONF" "$UPDATER_TOKEN_FILE" "/run/lock/${SERVICE_NAME}-update.lock"
     systemctl daemon-reload
     echo "Removed $SERVICE_NAME, its updater and $APP_DIR."
-    echo "Kept $CONF_DIR (config and token) and the '$SERVICE_USER' user; delete them by hand if wanted."
+    if [[ "$purge" == yes ]]; then
+        rm -rf "$CONF_DIR"
+        if id "$SERVICE_USER" >/dev/null 2>&1; then userdel "$SERVICE_USER" 2>/dev/null || true; fi
+        echo "Purged $CONF_DIR (config and token) and the '$SERVICE_USER' user."
+    else
+        echo "Kept $CONF_DIR (config and token) and the '$SERVICE_USER' user; add --purge to delete them too."
+    fi
     exit 0
 fi
 
@@ -139,7 +187,9 @@ if [[ "$action" == update ]]; then
     exit 0
 fi
 
-# Chooses the updater's token: UPDATER_GITHUB_TOKEN, a prompt, or the proxy's own GITHUB_TOKEN from env.
+# Chooses the updater's token: UPDATER_GITHUB_TOKEN, the token already configured, INSTALL_GITHUB_TOKEN (the one the
+# one-line installer downloaded this release with; asked first when interactive), a prompt, or the proxy's own
+# GITHUB_TOKEN from env.
 choose_updater_token() {
     local current token="" answer=""
     current="$(setting TOKEN_FILE)"
@@ -148,6 +198,12 @@ choose_updater_token() {
     elif [[ -n "$current" && -f "$current" ]]; then
         echo "$current"
         return
+    elif [[ -n "${INSTALL_GITHUB_TOKEN:-}" ]] && ! interactive; then
+        token="$INSTALL_GITHUB_TOKEN"
+    elif [[ -n "${INSTALL_GITHUB_TOKEN:-}" ]] &&
+        read -rp "Use the GitHub token this release was downloaded with for automatic updates? [Y/n] " answer &&
+        [[ ! "$answer" =~ ^[Nn] ]]; then
+        token="$INSTALL_GITHUB_TOKEN"
     elif interactive; then
         echo "The updater needs a GitHub token that can read releases of $UPDATE_REPO." >&2
         echo "The proxy's own GITHUB_TOKEN works if you also give it Contents: read-only on that repository." >&2
@@ -234,7 +290,7 @@ enable_auto_update() {
         run_updater --check >/dev/null 2>&1 || rc=$?
         if [[ $rc -ne 0 && $rc -ne 10 ]]; then
             echo "Warning: the update check failed; make sure the token in $token_file can read $UPDATE_REPO." >&2
-            echo "Try it with: sudo $0 --check" >&2
+            echo "Try it with: sudo $APP_DIR/scripts/install-service.sh --check-update" >&2
         fi
     fi
 }
@@ -275,6 +331,13 @@ write_modules_config() {
         fs.writeFileSync(process.argv[2], text);
     ' "$SRC_DIR/src/server.js" "$out" "$@"
 }
+
+# --yes: a first install needs the proxy's token from the environment; fail before anything is changed.
+if [[ "$assume_yes" == yes && ! -f "$CONF_DIR/env" && -z "${FOUNDRY_PROXY_GITHUB_TOKEN:-}" ]]; then
+    echo "--yes: no GitHub token for the proxy. Set FOUNDRY_PROXY_GITHUB_TOKEN (fine-grained, Contents: read-only on the" >&2
+    echo "module repositories) and pass it through sudo: sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN ..." >&2
+    exit 1
+fi
 
 # Dedicated unprivileged user.
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then

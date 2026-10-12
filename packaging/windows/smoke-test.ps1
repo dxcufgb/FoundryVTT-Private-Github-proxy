@@ -4,7 +4,7 @@ Installs the built installer silently on this (disposable, elevated) Windows mac
 then uninstalls it again. Used by CI; do not run it on a machine whose real proxy you care about.
 
 .EXAMPLE
-.\packaging\windows\smoke-test.ps1 -Installer dist\FoundryReleaseProxy-Setup-1.1.0.exe
+.\packaging\windows\smoke-test.ps1 -Installer dist\foundry-release-proxy-1.2.0-setup.exe
 #>
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$Installer)

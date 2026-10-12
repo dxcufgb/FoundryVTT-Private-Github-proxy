@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# One-command installer for Linux (systemd): checks for a usable Node.js, downloads the official one if needed,
-# then runs scripts/install-service.sh, which sets up the service.
+# The Linux installer (systemd), at the top of the release archive and of the repository: checks for a usable
+# Node.js, downloads the official one if needed, then runs scripts/install-service.sh, which sets up the service.
+# It is what the one-line installer runs (as root, with your arguments):
+#
+#   curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s foundry-release-proxy
 #
 #   sudo ./install.sh                                   # interactive: asks for the token, offers Node.js if missing
-#   sudo ./install.sh --install-node --auto-update      # download Node.js without asking, turn on auto-update
+#   sudo ./install.sh --yes --auto-update               # no questions (token from FOUNDRY_PROXY_GITHUB_TOKEN)
 #   FOUNDRY_PROXY_GITHUB_TOKEN=github_pat_... \
-#     sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN ./install.sh --install-node \
+#     sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN ./install.sh --yes \
 #       --module transformations=dxcufgb/FoundryVTT-ghpg-Transformations   # fully unattended
-#   sudo ./install.sh --uninstall                       # remove service, updater, code and a Node.js installed here
+#   sudo ./install.sh --check-update                    # exit 0 = up to date, 10 = newer release available
+#   sudo ./install.sh --uninstall [--purge]             # remove service, updater, code and a Node.js installed here
 #
-# install.sh options: --install-node (download Node.js without asking), --no-install-node (never download),
-# -h/--help. Everything else (--module ID=OWNER/REPO, --auto-update, --no-auto-update, --check, --update-now,
-# --enable-auto-update, --disable-auto-update, --uninstall) is passed on to scripts/install-service.sh.
+# `./install.sh --help` lists every option. install.sh itself handles --install-node (download Node.js without asking),
+# --no-install-node (never download) and --yes (no questions; implies --install-node unless --no-install-node is given);
+# everything else is passed on to scripts/install-service.sh.
 #
 # Node.js: an existing system-wide node (>= 18, not under /home or /root) or $NODE_BIN is used as is. Otherwise the
 # official Node.js 22 tarball for this CPU is downloaded from nodejs.org, checked against its published SHA-256 and
@@ -24,28 +28,34 @@ NODE_DIR="${NODE_DIR:-/opt/foundry-release-proxy-node}"
 NODE_DIST="${NODE_DIST:-https://nodejs.org/dist/latest-v${NODE_MAJOR}.x}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Print command usage to stderr and exit with status 2.
-usage() {
-    sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
-    exit 2
-}
-
 install_node=ask
+assume_yes=no
+manage=no          # an action on an existing install: never download Node.js for it
 passthrough=()
 uninstall=no
 for arg in "$@"; do
     case "$arg" in
         --install-node) install_node=yes ;;
         --no-install-node) install_node=no ;;
-        -h | --help) usage ;;
+        --yes | -y) assume_yes=yes; passthrough+=("$arg") ;;
+        -h | --help)
+            if [[ -f "$HERE/scripts/install-service.sh" ]]; then
+                exec bash "$HERE/scripts/install-service.sh" --help
+            fi
+            sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
         --uninstall) uninstall=yes; passthrough+=("$arg") ;;
+        --check | --check-update | --update-now | --enable-auto-update | --disable-auto-update)
+            manage=yes; passthrough+=("$arg") ;;
         *) passthrough+=("$arg") ;;
     esac
 done
+if [[ "$assume_yes" == yes && "$install_node" == ask ]]; then install_node=yes; fi
 
 if [[ $EUID -ne 0 ]]; then
     echo "Re-running with sudo..." >&2
-    exec sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN,UPDATER_GITHUB_TOKEN,NODE_BIN "$0" "$@"
+    exec sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN,UPDATER_GITHUB_TOKEN,INSTALL_GITHUB_TOKEN,NODE_BIN "$0" "$@"
 fi
 if [[ ! -x "$HERE/scripts/install-service.sh" ]]; then
     echo "scripts/install-service.sh not found next to install.sh; run it from a clone or an unpacked release." >&2
@@ -103,6 +113,9 @@ node_bin="${NODE_BIN:-$(command -v node || true)}"
 if ! usable_node "$node_bin"; then
     if usable_node "$NODE_DIR/bin/node"; then
         node_bin="$NODE_DIR/bin/node"
+    elif [[ "$manage" == yes ]]; then
+        # checking, updating or switching auto-update on/off never installs Node.js; the service script reports it
+        exec "$HERE/scripts/install-service.sh" ${passthrough[@]+"${passthrough[@]}"}
     else
         case "$install_node" in
             yes) ;;
@@ -118,7 +131,7 @@ if ! usable_node "$node_bin"; then
                         exit 1
                     fi
                 else
-                    echo "No usable system-wide Node.js found; re-run with --install-node to download one." >&2
+                    echo "No usable system-wide Node.js found; re-run with --install-node (or --yes) to download one." >&2
                     exit 1
                 fi
                 ;;

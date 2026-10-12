@@ -4,7 +4,7 @@
 # `install-service.sh --check` and `--update-now` run it by hand.
 #
 #   auto-update.sh --check   report whether a newer release exists (exit 0 = up to date, 10 = update available)
-#   auto-update.sh --apply   download, verify (SHA256SUMS), install it through install-service.sh --upgrade and
+#   auto-update.sh --apply   download, verify (SHA256SUMS.txt), install it through install-service.sh --upgrade and
 #                            restart the service; on any failure the previous install is put back
 #
 # The release lookup, version comparison, download and checksum check are in src/updater.js; this script only

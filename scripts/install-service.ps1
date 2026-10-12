@@ -14,6 +14,9 @@ Run from an elevated Windows PowerShell 5.1 (or newer) prompt in the unpacked re
   .\scripts\install-service.ps1 -Uninstall           remove tasks, updater and code (keeps config and env)
   .\scripts\install-service.ps1 -SetAdminPassword    (re)set the password of the administration page (/_admin/)
   .\scripts\install-service.ps1 -SetNotify           (re)enter the update-notification e-mail settings
+  .\scripts\install-service.ps1 -AdminWeb            admin page in any browser here: https://<this PC>:8788/
+  .\scripts\install-service.ps1 -NoAdminWeb          admin page only on this PC again
+  .\scripts\install-service.ps1 -RenewAdminCert      a new self-signed certificate for that page
 
 Layout (config.json and env are created once and never overwritten):
   C:\Program Files\FoundryReleaseProxy\              code (replaced on every run)
@@ -22,6 +25,7 @@ Layout (config.json and env are created once and never overwritten):
   C:\ProgramData\FoundryReleaseProxy\admin.json      admin page password hash + notification e-mail settings
                                                     (Administrators/SYSTEM + LOCAL SERVICE read/write)
   C:\ProgramData\FoundryReleaseProxy\env             GITHUB_TOKEN, PORT, ... (Administrators/SYSTEM + LOCAL SERVICE read)
+  C:\ProgramData\FoundryReleaseProxy\admin-tls.crt/.key  self-signed certificate of the admin port
   C:\ProgramData\FoundryReleaseProxy\logs\proxy.log  proxy log
   C:\ProgramData\FoundryReleaseProxy\auto-update.conf, auto-update.log, updater-token (Administrators/SYSTEM only)
 
@@ -30,6 +34,8 @@ The updater runs daily (random delay) as the task "FoundryReleaseProxy-Update" u
 Tokens come from a hidden prompt or the FOUNDRY_PROXY_GITHUB_TOKEN / UPDATER_GITHUB_TOKEN environment variables,
 never from the command line. The same goes for the admin page password (FOUNDRY_PROXY_ADMIN_PASSWORD) and the
 notification settings (FOUNDRY_PROXY_NOTIFY_EMAILS, FOUNDRY_PROXY_SMTP_HOST, _PORT, _SECURITY, _USER, _PASSWORD, _FROM).
+The browser admin port: FOUNDRY_PROXY_ADMIN_WEB=1 (first install), FOUNDRY_PROXY_ADMIN_PORT (default 8788) and
+FOUNDRY_PROXY_ADMIN_PUBLIC_URL; -AdminWeb also opens the port in Windows Firewall (Domain and Private networks).
 #>
 [CmdletBinding()]
 param(
@@ -42,6 +48,9 @@ param(
     [switch]$UpdateNow,
     [switch]$SetAdminPassword,
     [switch]$SetNotify,
+    [switch]$AdminWeb,
+    [switch]$NoAdminWeb,
+    [switch]$RenewAdminCert,
     # Non-interactive re-install that keeps every setting; used by the updater.
     [switch]$Upgrade,
     [string]$NodePath
@@ -59,6 +68,9 @@ $LogDir = Join-Path $DataDir 'logs'
 $EnvFile = Join-Path $DataDir 'env'
 $ConfigFile = Join-Path $DataDir 'config.json'
 $AdminFile = Join-Path $DataDir 'admin.json'
+$AdminCert = Join-Path $DataDir 'admin-tls.crt'
+$AdminKey = Join-Path $DataDir 'admin-tls.key'
+$FirewallRule = "$AppName-Admin"
 $AutoConf = Join-Path $DataDir 'auto-update.conf'
 $UpdaterTokenFile = Join-Path $DataDir 'updater-token'
 $TaskName = $AppName
@@ -194,6 +206,116 @@ function Write-AdminSetting([string]$What, [string]$Node) {
     }
     finally {
         Remove-Item -LiteralPath 'Env:FOUNDRY_PROXY_ADMIN_PASSWORD', 'Env:FOUNDRY_PROXY_SMTP_PASSWORD' -ErrorAction SilentlyContinue
+    }
+}
+
+# KEY=value from env (the last line wins); '' when not set.
+function Get-EnvValue([string]$Key) {
+    if (-not (Test-Path -LiteralPath $EnvFile)) { return '' }
+    $value = ''
+    foreach ($line in [IO.File]::ReadAllLines($EnvFile)) {
+        if ($line.StartsWith("$Key=")) { $value = $line.Substring($Key.Length + 1) }
+    }
+    $value
+}
+
+# Sets KEY=value in env (in place, so its ACL stays), or removes KEY when the value is ''.
+function Write-EnvValue([string]$Key, [string]$Value) {
+    $lines = @([IO.File]::ReadAllLines($EnvFile) | Where-Object { -not $_.StartsWith("$Key=") })
+    if ($Value) { $lines += "$Key=$Value" }
+    Write-TextFile $EnvFile (($lines -join "`r`n") + "`r`n")
+}
+
+function Test-AdminOn([string]$Node) {
+    & $Node (Join-Path $AppDir 'src\admin.js') check $AdminFile | Out-Null
+    $LASTEXITCODE -eq 0
+}
+
+function Test-TlsOff { (Get-EnvValue 'ADMIN_TLS') -match '^(off|0|false|no)$' }
+
+# Self-signed certificate for the admin port (made once; -Force makes a new one); LOCAL SERVICE may only read it.
+function Write-AdminCert([string]$Node, [switch]$Force) {
+    if ((Test-Path -LiteralPath $AdminCert) -and (Test-Path -LiteralPath $AdminKey) -and -not $Force) { return }
+    $names = @()
+    $public = Get-EnvValue 'ADMIN_PUBLIC_URL'
+    if ($public) { $names += ([Uri]$public).Host }
+    foreach ($f in @($AdminCert, $AdminKey)) {
+        if (-not (Test-Path -LiteralPath $f)) { Write-TextFile $f '' }
+        Protect-ProxyFile $f
+    }
+    & $Node (Join-Path $AppDir 'src\selfsigned.js') $AdminCert $AdminKey @names | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'could not make the admin certificate' }
+    foreach ($f in @($AdminCert, $AdminKey)) { Protect-ProxyFile $f }
+}
+
+# Serve the admin page to other computers: ADMIN_PORT (FOUNDRY_PROXY_ADMIN_PORT, the current one or 8788) on all
+# addresses, HTTPS with the self-signed certificate unless ADMIN_TLS=off, and a Windows Firewall rule for the port.
+function Enable-AdminWeb([string]$Node) {
+    $port = $env:FOUNDRY_PROXY_ADMIN_PORT
+    if (-not $port) { $port = Get-EnvValue 'ADMIN_PORT' }
+    if (-not $port) { $port = '8788' }
+    $proxyPort = Get-EnvValue 'PORT'
+    if (-not $proxyPort) { $proxyPort = '8787' }
+    $n = 0
+    if (-not [int]::TryParse($port, [ref]$n) -or $n -lt 1 -or $n -gt 65535 -or $port -eq $proxyPort) {
+        throw "Invalid admin port '$port' (1-65535, not the proxy's port $proxyPort)."
+    }
+    if ($env:FOUNDRY_PROXY_ADMIN_PUBLIC_URL) {
+        $uri = $null
+        if (-not [Uri]::TryCreate($env:FOUNDRY_PROXY_ADMIN_PUBLIC_URL, [UriKind]::Absolute, [ref]$uri)) {
+            throw "FOUNDRY_PROXY_ADMIN_PUBLIC_URL is not a URL: $($env:FOUNDRY_PROXY_ADMIN_PUBLIC_URL)"
+        }
+        Write-EnvValue 'ADMIN_PUBLIC_URL' $env:FOUNDRY_PROXY_ADMIN_PUBLIC_URL
+    }
+    Write-EnvValue 'ADMIN_PORT' $port
+    if (-not (Get-EnvValue 'ADMIN_HOST')) { Write-EnvValue 'ADMIN_HOST' '0.0.0.0' }
+    if (-not (Test-TlsOff)) { Write-AdminCert $Node }
+    Get-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    New-NetFirewallRule -Name $FirewallRule -DisplayName 'Foundry Release Proxy admin page' -Direction Inbound `
+        -Protocol TCP -LocalPort $port -Action Allow -Profile Domain, Private | Out-Null
+    Write-ProxyLog "Admin page for other computers on port $port (Windows Firewall: allowed on Domain and Private networks)."
+}
+
+function Disable-AdminWeb {
+    Write-EnvValue 'ADMIN_PORT' ''
+    Get-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    Write-ProxyLog 'Admin page only on this PC again.'
+}
+
+# Restarts the proxy task (unless it is disabled because the token is still missing).
+function Invoke-ProxyRestart {
+    Invoke-ProxyShutdown
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($task -and $task.State -ne 'Disabled') {
+        Start-ScheduledTask -TaskName $TaskName
+        Write-ProxyLog "Saved; restarted $TaskName."
+    }
+    else { Write-ProxyLog "Saved; $TaskName is not registered or disabled, so it was not started." }
+}
+
+function Write-AdminInfo([string]$Node) {
+    if (-not (Test-AdminOn $Node)) {
+        Write-ProxyLog 'Admin:  page off; turn it on with: .\scripts\install-service.ps1 -SetAdminPassword'
+        return
+    }
+    $port = Get-EnvValue 'PORT'
+    if (-not $port) { $port = '8787' }
+    $adminPort = Get-EnvValue 'ADMIN_PORT'
+    if (-not $adminPort) {
+        Write-ProxyLog "Admin:  http://localhost:$port/_admin/ (on this PC; for other computers: -AdminWeb)"
+        return
+    }
+    $scheme = 'https'
+    if (Test-TlsOff) { $scheme = 'http' }
+    Write-ProxyLog "Admin:  $($scheme)://$($env:COMPUTERNAME.ToLower()):$adminPort/ in a browser on any computer here"
+    $public = Get-EnvValue 'ADMIN_PUBLIC_URL'
+    if ($public) { Write-ProxyLog "        $public (public address)" }
+    if ($scheme -eq 'https' -and (Test-Path -LiteralPath $AdminCert)) {
+        try {
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $AdminCert
+            Write-ProxyLog "        self-signed certificate: the browser warns once; SHA-1 thumbprint $($cert.Thumbprint)"
+        }
+        catch { Write-ProxyLog '        self-signed certificate: the browser warns once' }
     }
 }
 
@@ -335,6 +457,7 @@ if ($Uninstall) {
     foreach ($file in @($UpdaterTokenFile, $AutoConf)) {
         if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
     }
+    Get-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     Write-ProxyLog "Removed the $TaskName tasks, the updater and $AppDir."
     Write-ProxyLog "Kept $DataDir (config.json, env with the token, logs); delete it by hand if wanted."
     exit 0
@@ -350,13 +473,22 @@ if ($SetAdminPassword -or $SetNotify) {
         throw "The proxy is not installed (or too old for the admin page); run .\scripts\install-service.ps1 first."
     }
     if ($SetAdminPassword) { Write-AdminSetting 'password' $node } else { Write-AdminSetting 'notify' $node }
-    Invoke-ProxyShutdown
-    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($task -and $task.State -ne 'Disabled') {
-        Start-ScheduledTask -TaskName $TaskName
-        Write-ProxyLog "Saved; restarted $TaskName."
+    Invoke-ProxyRestart
+    exit 0
+}
+
+if ($AdminWeb -or $NoAdminWeb -or $RenewAdminCert) {
+    if (-not (Test-Path -LiteralPath (Join-Path $AppDir 'src\selfsigned.js')) -or -not (Test-Path -LiteralPath $EnvFile)) {
+        throw "The proxy is not installed (or too old for this); run .\scripts\install-service.ps1 first."
     }
-    else { Write-ProxyLog "Saved; $TaskName is not registered or disabled, so it was not started." }
+    if ($AdminWeb) { Enable-AdminWeb $node }
+    elseif ($NoAdminWeb) { Disable-AdminWeb }
+    else { Write-AdminCert $node -Force }
+    Invoke-ProxyRestart
+    if ($AdminWeb -and -not (Test-AdminOn $node)) {
+        Write-Warning 'The admin page has no password yet; set one with: .\scripts\install-service.ps1 -SetAdminPassword'
+    }
+    Write-AdminInfo $node
     exit 0
 }
 
@@ -393,7 +525,8 @@ if (-not (Test-Path -LiteralPath $ConfigFile)) {
 }
 Protect-ProxyWritableFile $ConfigFile
 # admin.json: created once (asks for the admin password and notification e-mails), never overwritten here.
-if (-not (Test-Path -LiteralPath $AdminFile)) { Write-AdminSetting 'first' $node }
+$adminNew = -not (Test-Path -LiteralPath $AdminFile)
+if ($adminNew) { Write-AdminSetting 'first' $node }
 Protect-ProxyWritableFile $AdminFile
 if (-not (Test-Path -LiteralPath $EnvFile)) {
     $token = 'REPLACE_ME'
@@ -411,6 +544,18 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
     Write-ProxyLog "Wrote $EnvFile."
 }
 Protect-ProxyFile $EnvFile
+
+# A new admin page: offer it to the browsers of other computers (like Webmin), once.
+if ($adminNew -and -not (Get-EnvValue 'ADMIN_PORT') -and (Test-AdminOn $node)) {
+    $web = $env:FOUNDRY_PROXY_ADMIN_WEB
+    if (-not $web -and (Test-Interactive)) {
+        $answer = Read-Host -Prompt "Open the admin page to browsers on other computers (https://$($env:COMPUTERNAME.ToLower()):8788/, like Webmin)? [Y/n]"
+        if ($answer -match '^[Nn]') { $web = 'no' } else { $web = 'yes' }
+    }
+    if ($web -match '^(yes|1|true)$') { Enable-AdminWeb $node }
+}
+# The certificate of an admin port that was turned on by hand.
+if ((Get-EnvValue 'ADMIN_PORT') -and -not (Test-TlsOff)) { Write-AdminCert $node }
 
 # Launcher: rotates the log at 5 MB, then runs node with the env file.
 $launcher = Join-Path $AppDir 'run-proxy.cmd'
@@ -462,13 +607,5 @@ else { Write-AutoUpdateConf -Enabled 'no' -TokenFile '' -Node $node }
 
 Write-ProxyLog "Status: Get-ScheduledTask $TaskName | Select-Object State"
 Write-ProxyLog "Logs:   Get-Content -Wait $log"
-& $node (Join-Path $AppDir 'src\admin.js') check $AdminFile | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    $port = ([IO.File]::ReadAllLines($EnvFile) | Where-Object { $_ -like 'PORT=*' } | Select-Object -Last 1) -replace '^PORT=', ''
-    if (-not $port) { $port = '8787' }
-    Write-ProxyLog "Admin:  http://localhost:$port/_admin/"
-}
-else {
-    Write-ProxyLog 'Admin:  page off; turn it on with: .\scripts\install-service.ps1 -SetAdminPassword'
-}
+Write-AdminInfo $node
 exit 0

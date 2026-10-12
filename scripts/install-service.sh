@@ -13,6 +13,8 @@
 #   sudo ./scripts/install-service.sh --module ID=OWNER/REPO  # first install: put this module in config.json (repeatable)
 #   sudo ./scripts/install-service.sh --set-admin-password  # (re)set the password of the administration page
 #   sudo ./scripts/install-service.sh --set-notify          # (re)enter the update-notification e-mail settings
+#   sudo ./scripts/install-service.sh --admin-web           # admin page in the browser on https://<host>:8788/
+#   sudo ./scripts/install-service.sh --no-admin-web        # admin page only on this machine again
 #
 # Layout (the config survives code updates; re-running this script never overwrites it):
 #   /opt/foundry-release-proxy/                   code (replaced on every run)
@@ -22,6 +24,7 @@
 #   /etc/foundry-release-proxy/admin.json         admin page password hash + notification e-mail settings (600, owned
 #                                                 by the service user)
 #   /etc/foundry-release-proxy/env                GITHUB_TOKEN, PORT, ... (chmod 600, owned by the service user)
+#   /etc/foundry-release-proxy/admin-tls.crt/.key self-signed certificate of the admin port (root:service user, 644/640)
 #   /etc/foundry-release-proxy/auto-update.conf   auto-update on/off and which token it uses (root, 600)
 #   /etc/foundry-release-proxy/updater-token      only if the updater has its own token (root, 600)
 #
@@ -71,6 +74,10 @@ Options of this installer:
   --upgrade                non-interactive re-install that keeps every setting (used by the updater)
   --set-admin-password     (re)set the password of the administration page (http://localhost:8787/_admin/)
   --set-notify             (re)enter the e-mail settings for update notifications (also editable on the admin page)
+  --admin-web              serve the admin page to browsers on other computers: https://<this host>:8788/ (port:
+                           FOUNDRY_PROXY_ADMIN_PORT; public address: FOUNDRY_PROXY_ADMIN_PUBLIC_URL)
+  --no-admin-web           serve the admin page only on this machine again (http://localhost:8787/_admin/)
+  --renew-admin-cert       make a new self-signed certificate for the admin port
 
 Environment (tokens are never taken as arguments and never logged):
   FOUNDRY_PROXY_GITHUB_TOKEN  the proxy's token (Contents: read-only on the module repositories);
@@ -84,6 +91,9 @@ Environment (tokens are never taken as arguments and never logged):
   FOUNDRY_PROXY_SMTP_HOST, FOUNDRY_PROXY_SMTP_PORT, FOUNDRY_PROXY_SMTP_SECURITY (starttls|tls|none),
   FOUNDRY_PROXY_SMTP_USER, FOUNDRY_PROXY_SMTP_PASSWORD, FOUNDRY_PROXY_SMTP_FROM
                               the mail server for those e-mails
+  FOUNDRY_PROXY_ADMIN_WEB       yes = first install: serve the admin page to other computers (like --admin-web)
+  FOUNDRY_PROXY_ADMIN_PORT      port of that browser admin page (default 8788)
+  FOUNDRY_PROXY_ADMIN_PUBLIC_URL  the address it is reached at from outside, e.g. https://proxy.example.com:8788
   NODE_BIN                    the node binary to use
 USAGE
 }
@@ -121,6 +131,9 @@ while [[ $# -gt 0 ]]; do
         --uninstall) action=uninstall ;;
         --set-admin-password) action=admin-password ;;
         --set-notify) action=notify ;;
+        --admin-web) action=admin-web ;;
+        --no-admin-web) action=no-admin-web ;;
+        --renew-admin-cert) action=renew-cert ;;
         --purge) purge=yes ;;
         -h | --help) print_usage; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; usage ;;
@@ -440,6 +453,156 @@ configure_admin() {
     unset FOUNDRY_PROXY_ADMIN_PASSWORD FOUNDRY_PROXY_SMTP_PASSWORD
 }
 
+ADMIN_CERT="$CONF_DIR/admin-tls.crt"
+ADMIN_KEY="$CONF_DIR/admin-tls.key"
+
+# Value of KEY in the env file (the last line wins; empty when not set). Read as text, never sourced.
+env_value() {
+    [[ -f "$CONF_DIR/env" ]] || return 0
+    sed -n "s/^$1=//p" "$CONF_DIR/env" | tail -n 1
+}
+
+# Set KEY=VALUE in the env file, or remove KEY when VALUE is empty; the file stays 600 and owned by the service user.
+set_env_value() {
+    local key="$1" value="$2" tmp
+    tmp="$(mktemp "$CONF_DIR/.env.XXXXXX")"
+    grep -v "^${key}=" "$CONF_DIR/env" > "$tmp" || true
+    if [[ -n "$value" ]]; then printf '%s=%s\n' "$key" "$value" >> "$tmp"; fi
+    chown "$SERVICE_USER:$SERVICE_USER" "$tmp"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$CONF_DIR/env"
+}
+
+# Succeeds when admin.json holds a password (the admin page is on).
+admin_on() { "$NODE_BIN" "$SRC_DIR/src/admin.js" check "$CONF_DIR/admin.json" >/dev/null 2>&1; }
+
+# Self-signed certificate for the admin port (made once; $1 = force makes a new one). root-owned, so the service
+# reads it but cannot change it.
+make_admin_cert() {
+    if [[ -f "$ADMIN_CERT" && -f "$ADMIN_KEY" && "${1:-}" != force ]]; then return 0; fi
+    local public host=""
+    public="$(env_value ADMIN_PUBLIC_URL)"
+    if [[ -n "$public" ]]; then
+        host="$("$NODE_BIN" -e 'console.log(new URL(process.argv[1]).hostname)' "$public" 2>/dev/null || true)"
+    fi
+    (umask 077 && "$NODE_BIN" "$SRC_DIR/src/selfsigned.js" "$ADMIN_CERT" "$ADMIN_KEY" ${host:+"$host"})
+    chown "root:$SERVICE_USER" "$ADMIN_CERT" "$ADMIN_KEY"
+    chmod 644 "$ADMIN_CERT"
+    chmod 640 "$ADMIN_KEY"
+}
+
+# Serve the admin page to other computers: ADMIN_PORT (FOUNDRY_PROXY_ADMIN_PORT, the current one or 8788) on
+# ADMIN_HOST (kept if set, else all addresses), HTTPS with the self-signed certificate unless ADMIN_TLS=off.
+enable_admin_web() {
+    local port proxy_port
+    port="${FOUNDRY_PROXY_ADMIN_PORT:-$(env_value ADMIN_PORT)}"
+    port="${port:-8788}"
+    proxy_port="$(env_value PORT)"
+    proxy_port="${proxy_port:-8787}"
+    if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )) || [[ "$port" == "$proxy_port" ]]; then
+        echo "Invalid admin port '$port' (1-65535, not the proxy's port $proxy_port)." >&2
+        exit 1
+    fi
+    if [[ -n "${FOUNDRY_PROXY_ADMIN_PUBLIC_URL:-}" ]]; then
+        if ! "$NODE_BIN" -e 'new URL(process.argv[1])' "$FOUNDRY_PROXY_ADMIN_PUBLIC_URL" 2>/dev/null; then
+            echo "FOUNDRY_PROXY_ADMIN_PUBLIC_URL is not a URL: $FOUNDRY_PROXY_ADMIN_PUBLIC_URL" >&2
+            exit 1
+        fi
+        set_env_value ADMIN_PUBLIC_URL "$FOUNDRY_PROXY_ADMIN_PUBLIC_URL"
+    fi
+    set_env_value ADMIN_PORT "$port"
+    if [[ -z "$(env_value ADMIN_HOST)" ]]; then set_env_value ADMIN_HOST 0.0.0.0; fi
+    if [[ ! "$(env_value ADMIN_TLS)" =~ ^(off|0|false|no)$ ]]; then make_admin_cert; fi
+}
+
+# The proxy's systemd unit. An admin port below 1024 (e.g. 443) gets CAP_NET_BIND_SERVICE and nothing else.
+write_unit() {
+    local caps="" admin_port
+    admin_port="$(env_value ADMIN_PORT)"
+    if [[ "$admin_port" =~ ^[0-9]+$ ]] && (( admin_port < 1024 )); then
+        caps=$'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE'
+    fi
+    cat > "$UNIT_FILE" <<UNIT
+[Unit]
+Description=Foundry VTT private-release proxy
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+EnvironmentFile=${CONF_DIR}/env
+WorkingDirectory=${APP_DIR}
+ExecStart=${NODE_BIN} ${APP_DIR}/src/server.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+# the admin page rewrites these two files (and nothing else under /etc)
+ReadWritePaths=-${CONF_DIR}/config.json -${CONF_DIR}/admin.json
+ProtectHome=true
+PrivateTmp=true
+${caps}
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+# Where the admin page is, for the end of a run.
+print_admin_info() {
+    local port admin_port scheme public
+    port="$(env_value PORT)"
+    port="${port:-8787}"
+    if ! admin_on; then
+        echo "Admin:   page off; turn it on with: sudo $APP_DIR/scripts/install-service.sh --set-admin-password"
+        return 0
+    fi
+    admin_port="$(env_value ADMIN_PORT)"
+    if [[ -z "$admin_port" ]]; then
+        echo "Admin:   http://localhost:$port/_admin/ (on this machine; for other computers: --admin-web)"
+        return 0
+    fi
+    scheme=https
+    if [[ "$(env_value ADMIN_TLS)" =~ ^(off|0|false|no)$ ]]; then scheme=http; fi
+    echo "Admin:   $scheme://$(uname -n):$admin_port/ in a browser on any computer here, or:"
+    for ip in $(hostname -I 2>/dev/null); do
+        if [[ "$ip" == *:* ]]; then echo "         $scheme://[$ip]:$admin_port/"; else echo "         $scheme://$ip:$admin_port/"; fi
+    done
+    public="$(env_value ADMIN_PUBLIC_URL)"
+    if [[ -n "$public" ]]; then echo "         $public (public address)"; fi
+    if [[ "$scheme" == https && -f "$ADMIN_CERT" ]]; then
+        echo "         self-signed certificate: the browser warns once; its SHA-256 fingerprint is"
+        echo "         $("$NODE_BIN" -e 'console.log(new (require("crypto").X509Certificate)(require("fs").readFileSync(process.argv[1])).fingerprint256)' "$ADMIN_CERT")"
+    fi
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+        echo "         the ufw firewall is on: allow the port with: sudo ufw allow $admin_port/tcp"
+    fi
+}
+
+if [[ "$action" == admin-web || "$action" == no-admin-web || "$action" == renew-cert ]]; then
+    if [[ ! -f "$APP_DIR/src/selfsigned.js" || ! -f "$CONF_DIR/env" ]]; then
+        echo "The proxy is not installed (or too old for this); install it first: sudo $0" >&2
+        exit 1
+    fi
+    SRC_DIR="$APP_DIR"
+    case "$action" in
+        admin-web) enable_admin_web ;;
+        no-admin-web) set_env_value ADMIN_PORT "" ;;
+        renew-cert) make_admin_cert force ;;
+    esac
+    write_unit
+    systemctl daemon-reload
+    systemctl restart "$SERVICE_NAME"
+    echo "Restarted $SERVICE_NAME."
+    if [[ "$action" == admin-web ]] && ! admin_on; then
+        echo "Note: the admin page has no password yet; set one with: sudo $0 --set-admin-password" >&2
+    fi
+    print_admin_info
+    exit 0
+fi
+
 if [[ "$action" == admin-password || "$action" == notify ]]; then
     if [[ ! -f "$APP_DIR/src/admin.js" || ! -f "$CONF_DIR/env" ]]; then
         echo "The proxy is not installed (or too old for the admin page); install it first: sudo $0" >&2
@@ -497,8 +660,10 @@ fi
 chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/config.json"
 chmod 600 "$CONF_DIR/config.json"
 # admin.json: created once (asks for the admin password and notification e-mails), never overwritten here.
+admin_new=no
 if [[ ! -f "$CONF_DIR/admin.json" ]]; then
     configure_admin first
+    admin_new=yes
 fi
 chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/admin.json"
 chmod 600 "$CONF_DIR/admin.json"
@@ -526,31 +691,19 @@ fi
 chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/env"
 chmod 600 "$CONF_DIR/env"
 
-cat > "$UNIT_FILE" <<UNIT
-[Unit]
-Description=Foundry VTT private-release proxy
-Wants=network-online.target
-After=network-online.target
+# A new admin page: offer it to the browsers of other computers (like Webmin), once.
+if [[ "$admin_new" == yes && -z "$(env_value ADMIN_PORT)" ]] && admin_on; then
+    web="${FOUNDRY_PROXY_ADMIN_WEB:-}"
+    if [[ -z "$web" ]] && interactive; then
+        read -rp "Open the admin page to browsers on other computers (https://$(uname -n):8788/, like Webmin)? [Y/n] " answer || answer=n
+        if [[ "${answer:-}" =~ ^[Nn] ]]; then web=no; else web=yes; fi
+    fi
+    if [[ "$web" =~ ^(yes|1|true)$ ]]; then enable_admin_web; fi
+fi
+# The certificate of an admin port that was turned on by hand.
+if [[ -n "$(env_value ADMIN_PORT)" && ! "$(env_value ADMIN_TLS)" =~ ^(off|0|false|no)$ ]]; then make_admin_cert; fi
 
-[Service]
-Type=simple
-User=${SERVICE_USER}
-Group=${SERVICE_USER}
-EnvironmentFile=${CONF_DIR}/env
-WorkingDirectory=${APP_DIR}
-ExecStart=${NODE_BIN} ${APP_DIR}/src/server.js
-Restart=always
-RestartSec=5
-NoNewPrivileges=true
-ProtectSystem=strict
-# the admin page rewrites these two files (and nothing else under /etc)
-ReadWritePaths=-${CONF_DIR}/config.json -${CONF_DIR}/admin.json
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-UNIT
+write_unit
 
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
@@ -584,10 +737,4 @@ fi
 
 echo "Status:  systemctl status $SERVICE_NAME"
 echo "Logs:    journalctl -u $SERVICE_NAME -f"
-if "$NODE_BIN" "$APP_DIR/src/admin.js" check "$CONF_DIR/admin.json" >/dev/null 2>&1; then
-    port="$(sed -n 's/^PORT=//p' "$CONF_DIR/env" | tail -n 1)"
-    port="${port:-8787}"
-    echo "Admin:   http://localhost:$port/_admin/ (from another computer: ssh -L $port:localhost:$port <this host>)"
-else
-    echo "Admin:   page off; turn it on with: sudo $APP_DIR/scripts/install-service.sh --set-admin-password"
-fi
+print_admin_info

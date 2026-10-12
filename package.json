@@ -8,6 +8,6 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/server.test.js test/updater.test.js test/admin.test.js"
+    "test": "node --test test/server.test.js test/updater.test.js test/admin.test.js test/adminweb.test.js"
   }
 }

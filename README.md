@@ -20,6 +20,7 @@ Foundry ──download URL──▶ proxy ──302──▶ pre-signed GitHub U
 | `GET /<module-id>/<tag>/module.json` | manifest of that tag, rewritten the same way |
 | `GET /<module-id>/<tag>/module.zip` | `302` to the pre-signed GitHub download of that tag's zip |
 | `/_admin/` and `/_admin/api/...` | the [administration page](#administration-page) (`404` while it has no password) |
+| anything on `ADMIN_PORT` (if set) | the admin page only, over HTTPS: `/` → `302 /_admin/`, plain `http://` → `301 https://` |
 | `POST`/`PUT`/`DELETE` outside `/_admin/` | `405` (the proxy routes are `GET`/`HEAD` only) |
 | anything else / unknown module / missing asset or release | `404` |
 | GitHub error | `502` (log shows module id and GitHub status, never the token) |
@@ -44,7 +45,9 @@ restart the service. An empty `{}` is only accepted while the administration pag
 
 Environment variables (see `.env.example`): `GITHUB_TOKEN` (required), `PORT` (default `8787`), `HOST` (default
 `127.0.0.1`), `PUBLIC_BASE_URL` (default `http://localhost:<PORT>`), `CONFIG_FILE`, `ADMIN_FILE` (default `admin.json`
-next to `CONFIG_FILE`), `ADMIN_HOSTS` (extra host names the admin page answers to, comma separated).
+next to `CONFIG_FILE`), `ADMIN_HOSTS` (extra host names the admin page answers to, comma separated) and the
+[admin page in the browser](#the-admin-page-in-your-browser-like-webmin) settings (`ADMIN_PORT`, `ADMIN_HOST`,
+`ADMIN_TLS`, `ADMIN_TLS_CERT`, `ADMIN_TLS_KEY`, `ADMIN_PUBLIC_URL`, `ADMIN_TRUST_PROXY`).
 
 Run locally: `GITHUB_TOKEN=... CONFIG_FILE=config.example.json node src/server.js`. Tests: `npm test` (proxy, admin
 page, mailer and updater; no network needed).
@@ -279,16 +282,16 @@ What it does:
   sends them, and **Send test e-mail**. The SMTP password is never shown again; leave the field empty to keep it.
 - **Admin password**: change it (needs the current one; every other session is logged out).
 
-**Access.** Like the proxy itself the page listens on `127.0.0.1` only. From another computer use an SSH tunnel:
-`ssh -L 8787:localhost:8787 pi@raspberrypi`, then open `http://localhost:8787/_admin/` there. Do not open the port to
-the network or the internet; if you put the proxy behind an HTTPS reverse proxy, set `PUBLIC_BASE_URL` to its `https://`
-address (the session cookie is then marked `Secure`) and list its host name in `ADMIN_HOSTS` if it differs.
+**Access.** On the machine itself the page is at `http://localhost:8787/_admin/` (the proxy's own port, which listens
+on `127.0.0.1` only). To use it from any browser on your network, turn on its own HTTPS port; see the next section.
 
 **Security.** The password is stored as a salted scrypt hash. A login gives an `HttpOnly`, `SameSite=Strict` session
-cookie (12 hours, in memory: restarting the proxy logs everybody out); every change also needs a per-session CSRF token
-and a JSON body, and requests from other web sites (`Origin`) or for unknown host names (DNS rebinding) are refused.
-Five wrong passwords lock that address out for five minutes. The page has a strict Content-Security-Policy and is never
-cached. The GitHub token is never shown on it.
+cookie (12 hours, in memory: restarting the proxy logs everybody out), marked `Secure` over HTTPS; every change also
+needs a per-session CSRF token and a JSON body. Requests from other web sites (`Origin`) or for host names that are not
+this machine's own names or addresses, `localhost`, `PUBLIC_BASE_URL`'s, `ADMIN_PUBLIC_URL`'s or `ADMIN_HOSTS` are
+refused (a guard against DNS rebinding). Five wrong passwords lock that address out for five minutes, and more than 50
+failed logins within 15 minutes from anywhere pause every login for a while. The page has a strict
+Content-Security-Policy and is never cached. The GitHub token is never shown on it.
 
 **Settings file.** `admin.json` next to `config.json` (`/etc/foundry-release-proxy/admin.json`,
 `C:\ProgramData\FoundryReleaseProxy\admin.json`) holds the password hash and the notification settings, including the
@@ -297,6 +300,100 @@ Windows: Administrators, SYSTEM and LOCAL SERVICE). The proxy's account may rewr
 place, but cannot create or delete files in the settings folder; on Linux the systemd unit allows writes to exactly
 these two files. Re-running the installer never overwrites `admin.json`; `--set-notify` (`-SetNotify`) re-enters the
 e-mail settings from the command line.
+
+### The admin page in your browser (like Webmin)
+
+Like Webmin on its port 10000, the admin page can have **its own port**, served over **HTTPS** to every browser on
+your network: `https://<this machine>:8788/`. That port serves only the admin page; the module proxy stays on
+`127.0.0.1`, so nothing without a password is ever exposed.
+
+| | Linux | Windows (elevated PowerShell) |
+| --- | --- | --- |
+| turn on | `sudo ./install.sh --admin-web` (a first install asks) | `.\scripts\install-service.ps1 -AdminWeb` (the setup wizard asks) |
+| turn off | `sudo ./install.sh --no-admin-web` | `.\scripts\install-service.ps1 -NoAdminWeb` |
+| new certificate | `sudo ./install.sh --renew-admin-cert` | `.\scripts\install-service.ps1 -RenewAdminCert` |
+
+The installer prints the addresses (`https://raspberrypi:8788/`, `https://192.168.1.20:8788/`, ...). A different port:
+`FOUNDRY_PROXY_ADMIN_PORT=10443` (Linux: `sudo --preserve-env=FOUNDRY_PROXY_ADMIN_PORT ./install.sh --admin-web`). A
+port below 1024, such as 443, is fine as well: the service then gets the one capability needed to bind it.
+
+- **Certificate.** The installer makes a self-signed certificate for the machine's names and addresses
+  (`admin-tls.crt` / `admin-tls.key` next to `config.json`, readable by the proxy but owned by root / Administrators).
+  Your browser warns about it once ("not private" / "potential security risk"): compare the SHA-256 fingerprint the
+  installer printed with the one the browser shows, then accept it. A real certificate (your own CA, Let's Encrypt)
+  goes in `ADMIN_TLS_CERT` and `ADMIN_TLS_KEY` (paths to PEM files the proxy's account can read) in `env`.
+- **Firewall.** Windows: the installer allows the port on private and domain networks. Linux: if `ufw` is on, the
+  installer prints the `sudo ufw allow 8788/tcp` you need.
+- **`http://`** on the admin port is redirected to `https://`.
+- Settings in `env` (restart the service after editing): `ADMIN_PORT` (port; unset = off), `ADMIN_HOST` (address,
+  default `0.0.0.0` = all), `ADMIN_TLS` (`off` = plain HTTP, only behind a reverse proxy), `ADMIN_TLS_CERT` /
+  `ADMIN_TLS_KEY`, `ADMIN_PUBLIC_URL` (the address used from outside, e.g. `https://proxy.example.com`),
+  `ADMIN_TRUST_PROXY` (`1` = trust `X-Forwarded-For` / `X-Forwarded-Proto` from a reverse proxy).
+
+### On a public address
+
+You can give the admin page a public name and reach it from the internet. Two ways:
+
+**A. Behind a web server you already run (recommended; e.g. an nginx or Apache server block managed in Webmin).**
+The web server does HTTPS with a real certificate (Let's Encrypt) and forwards to the admin port, which then listens on
+`127.0.0.1` only. In the proxy's `env` (`/etc/foundry-release-proxy/env`):
+
+```sh
+ADMIN_PORT=8788
+ADMIN_HOST=127.0.0.1
+ADMIN_TLS=off
+ADMIN_TRUST_PROXY=1
+ADMIN_PUBLIC_URL=https://proxy.example.com
+```
+
+then `sudo systemctl restart foundry-release-proxy`. Webmin cannot host the page inside its own interface, but its
+nginx or Apache module can create this server block / virtual host (or add it to the files by hand):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name proxy.example.com;
+    ssl_certificate     /etc/letsencrypt/live/proxy.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/proxy.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8788;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+```
+
+```apache
+<VirtualHost *:443>
+    ServerName proxy.example.com
+    SSLEngine on
+    SSLCertificateFile    /etc/letsencrypt/live/proxy.example.com/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/proxy.example.com/privkey.pem
+    ProxyPreserveHost On
+    ProxyPass        / http://127.0.0.1:8788/
+    ProxyPassReverse / http://127.0.0.1:8788/
+    RequestHeader set X-Forwarded-Proto "https"
+</VirtualHost>
+```
+
+(Apache: `a2enmod ssl proxy proxy_http headers`; it adds `X-Forwarded-For` itself.) Point only at the admin port, never
+at the proxy's port 8787: the module routes have no password and must stay private.
+
+**B. Directly.** Keep `ADMIN_HOST=0.0.0.0`, forward the admin port on your router, set `ADMIN_PUBLIC_URL` and give it a
+certificate browsers trust: `ADMIN_TLS_CERT` / `ADMIN_TLS_KEY`. Let's Encrypt's files are readable by root only, so copy
+them for the proxy in a renewal hook, for example `/etc/letsencrypt/renewal-hooks/deploy/foundry-proxy.sh`:
+
+```sh
+#!/bin/sh
+install -m 644 -o root -g foundry-proxy "$RENEWED_LINEAGE/fullchain.pem" /etc/foundry-release-proxy/admin-tls.crt
+install -m 640 -o root -g foundry-proxy "$RENEWED_LINEAGE/privkey.pem" /etc/foundry-release-proxy/admin-tls.key
+systemctl restart foundry-release-proxy
+```
+
+On the internet, use a long password (a passphrase of 16+ characters), keep automatic updates on, and if you can,
+limit who may connect (e.g. `allow`/`deny` in the nginx server block, or your router).
 
 ## Update notifications by e-mail
 
@@ -471,8 +568,13 @@ are on.
 - `404` for a module that exists: the repo has no published (non-draft, non-prerelease) release, the release lacks the
   assets, or the token has no access to that repo.
 - `502`: GitHub rejected the request; the log line shows the module id and status (`401` expired/invalid token).
-- `/_admin/` answers `404`: the page has no password yet (`--set-admin-password`). `403 unknown host name`: open it
-  as `localhost` / `127.0.0.1` or the host of `PUBLIC_BASE_URL`, or add the name to `ADMIN_HOSTS` in `env`.
+- `/_admin/` answers `404`: the page has no password yet (`--set-admin-password`). `403 unknown host name`: the name
+  in the address bar is not one of this machine's names or addresses; set it as `ADMIN_PUBLIC_URL` or add it to
+  `ADMIN_HOSTS` in `env`.
+- The admin port does not answer from another computer: check `ADMIN_PORT`/`ADMIN_HOST` in `env`, the firewall
+  (`sudo ufw allow 8788/tcp`; Windows allows private and domain networks only) and the log line `admin page for the
+  browser: ...` at startup. Behind a reverse proxy: logins that always fail with `Secure` cookies over plain http mean
+  `X-Forwarded-Proto` is missing or `ADMIN_TRUST_PROXY=1` is not set.
 - No notification e-mails: use **Send test e-mail** on the admin page; its error names the SMTP step that failed.
   The update log (`journalctl -u foundry-release-proxy-update`, `auto-update.log`) shows `notify: ...` lines.
 - Automatic update fails with `HTTP 404`: the updater's token cannot see this repository (add it to the token's

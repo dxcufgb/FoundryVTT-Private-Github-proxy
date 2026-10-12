@@ -4,10 +4,10 @@
 #   - Secrets (gitleaks): the whole history of the checked-out commit, with a pinned gitleaks release binary whose
 #     SHA-256 is hard-coded below. Output is redacted. A true false positive (a fake token in a test) goes into
 #     .gitleaks.toml (extends the default rules) as a narrow allowlist entry with a comment.
-#   - Code (Semgrep): the Semgrep registry rulesets listed in the scan step, rules of severity WARNING and ERROR.
-#     INFO rules are style and best-practice hints, too noisy for a blocking check. Fix a finding, or mark a false
-#     positive with an inline "nosemgrep: <rule-id>" comment and a reason; .semgrepignore is only for vendored or
-#     generated files.
+#   - Code (Semgrep): the Semgrep registry rules listed in the scan step (r/bash: every bash rule, there is no bash
+#     ruleset), rules of severity WARNING and ERROR. INFO rules are style and best-practice hints, too noisy for a
+#     blocking check. Fix a finding, or mark a false positive with an inline "nosemgrep: <rule-id>" comment and a
+#     reason; .semgrepignore is only for vendored or generated files.
 #   - Dependencies: known vulnerabilities in the pinned dependencies (see the job).
 # Findings show up as annotations on the pull request. The weekly run catches new advisories and new rules for code
 # that has not changed. How to run the three checks locally: README, Development.
@@ -95,9 +95,11 @@ jobs:
           semgrep scan --metrics=off --disable-version-check --error \
             --severity WARNING --severity ERROR \
             --config p/python --config p/javascript --config p/security-audit \
-            --config p/secrets --config p/github-actions --config p/bash \
+            --config p/secrets --config p/github-actions --config r/bash \
             --json-output="$report" || status=$?
           jq -r '.results[] | "::error file=\(.path),line=\(.start.line),endLine=\(.end.line),title=\(.check_id)::\(.extra.message | gsub("[\r\n%]"; " "))"' "$report" || true
+          # GitHub shows only the first few annotations of a step; this one lists every finding
+          jq -r 'select(.results | length > 0) | "::error title=Semgrep: \(.results | length) finding(s)::" + ([.results[] | "\(.check_id) \(.path):\(.start.line)"] | join(" ; "))' "$report" || true
           exit "$status"
 
   deps:

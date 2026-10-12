@@ -371,7 +371,7 @@ npm dependencies (nothing to audit). The same checks locally (gitleaks 8.30.1, s
 gitleaks git --redact .
 semgrep scan --metrics=off --error --severity WARNING --severity ERROR \
   --config p/python --config p/javascript --config p/security-audit \
-  --config p/secrets --config p/github-actions --config p/bash
+  --config p/secrets --config p/github-actions --config r/bash
 ```
 
 Mark a false positive with `// nosemgrep: <rule-id>` and a reason (Semgrep) or a narrow, commented allowlist entry in

@@ -328,7 +328,9 @@ port below 1024, such as 443, is fine as well: the service then gets the one cap
 - Settings in `env` (restart the service after editing): `ADMIN_PORT` (port; unset = off), `ADMIN_HOST` (address,
   default `0.0.0.0` = all), `ADMIN_TLS` (`off` = plain HTTP, only behind a reverse proxy), `ADMIN_TLS_CERT` /
   `ADMIN_TLS_KEY`, `ADMIN_PUBLIC_URL` (the address used from outside, e.g. `https://proxy.example.com`),
-  `ADMIN_TRUST_PROXY` (`1` = trust `X-Forwarded-For` / `X-Forwarded-Proto` from a reverse proxy).
+  `ADMIN_TRUST_PROXY` (`1` = trust `X-Forwarded-For` / `X-Forwarded-Proto` from a reverse proxy on this machine;
+  for a reverse proxy on another machine, its address instead, e.g. `192.168.1.5`, comma separated for several).
+  Forwarded headers from any other address are ignored, so nobody can fake them to dodge the login lockout.
 
 ### On a public address
 
@@ -380,6 +382,9 @@ server {
 
 (Apache: `a2enmod ssl proxy proxy_http headers`; it adds `X-Forwarded-For` itself.) Point only at the admin port, never
 at the proxy's port 8787: the module routes have no password and must stay private.
+
+If nginx or Apache runs on a different machine, bind the admin port to an address that machine can reach and set
+`ADMIN_TRUST_PROXY` to that machine's IP address instead of `1`.
 
 **B. Directly.** Keep `ADMIN_HOST=0.0.0.0`, forward the admin port on your router, set `ADMIN_PUBLIC_URL` and give it a
 certificate browsers trust: `ADMIN_TLS_CERT` / `ADMIN_TLS_KEY`. Let's Encrypt's files are readable by root only, so copy

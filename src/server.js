@@ -176,7 +176,7 @@ function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl
     adminFile: admin.file,
     settings: admin.settings,
     extraHosts: admin.hosts,
-    trustProxy: Boolean(admin.trustProxy),
+    trustProxy: admin.trustProxy || [],
     publicBaseUrl,
     log,
     mailer,
@@ -355,7 +355,15 @@ function main(env = process.env) {
         throw new ConfigError(`invalid ADMIN_PUBLIC_URL "${env.ADMIN_PUBLIC_URL}"`);
       }
     }
-    const trustProxy = env.ADMIN_TRUST_PROXY === '1' || env.ADMIN_TRUST_PROXY === 'true';
+    // ADMIN_TRUST_PROXY: 1 = a reverse proxy on this machine; or the proxies' addresses, comma separated.
+    let trustProxy = [];
+    const tp = (env.ADMIN_TRUST_PROXY || '').trim().toLowerCase();
+    if (tp === '1' || tp === 'true' || tp === 'yes') trustProxy = ['loopback'];
+    else if (tp && !/^(0|false|no)$/.test(tp)) {
+      trustProxy = tp.split(',').map((a) => a.trim()).filter(Boolean);
+      const bad = trustProxy.find((a) => a !== 'loopback' && !net.isIP(a));
+      if (bad) throw new ConfigError(`ADMIN_TRUST_PROXY: "${bad}" is not an IP address (use 1, or the proxies' addresses)`);
+    }
 
     // The admin page in the browser, Webmin style: its own port (ADMIN_PORT), HTTPS unless ADMIN_TLS=off.
     let adminPort;
@@ -387,7 +395,7 @@ function main(env = process.env) {
       adminServer.listen(adminPort, adminHost, () => {
         const scheme = tls ? 'https' : 'http';
         console.log(`admin page for the browser: ${scheme}://${adminHost}:${adminPort}/ (${tls ? tls.note : 'plain HTTP'})`);
-        if (!tls && !LOOPBACK.has(adminHost) && !trustProxy) {
+        if (!tls && !LOOPBACK.has(adminHost) && !trustProxy.length) {
           console.log('WARNING: ADMIN_TLS=off on a network address: the admin password crosses the network unencrypted');
         }
       });

@@ -351,13 +351,23 @@ function createAdmin({
     return { id, csrf };
   }
 
-  // HTTPS: the admin listener's own TLS, or (ADMIN_TRUST_PROXY) a reverse proxy that says so.
+  // Forwarded headers count only from a trusted proxy (ADMIN_TRUST_PROXY): one on this machine ("loopback", what
+  // ADMIN_TRUST_PROXY=1 means) or one of the listed addresses. Anyone else could fake them to dodge the lockout.
+  const trusted = trustProxy === true ? ['loopback'] : Array.isArray(trustProxy) ? trustProxy : [];
+  function fromProxy(req) {
+    if (!trusted.length) return false;
+    const peer = String(req.socket.remoteAddress || '').replace(/^::ffff:/i, '').toLowerCase();
+    if (trusted.includes('loopback') && (/^127\./.test(peer) || peer === '::1')) return true;
+    return trusted.includes(peer);
+  }
+
+  // HTTPS: the admin listener's own TLS, or a trusted reverse proxy that says so.
   const isSecure = (req) =>
-    Boolean(req.socket.encrypted) || (trustProxy && /^https$/i.test(String(req.headers['x-forwarded-proto'] || '')));
+    Boolean(req.socket.encrypted) || (fromProxy(req) && /^https$/i.test(String(req.headers['x-forwarded-proto'] || '')));
 
   // Behind a trusted reverse proxy the client is the last address it added to X-Forwarded-For.
   function clientIp(req) {
-    const fwd = trustProxy ? String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean) : [];
+    const fwd = fromProxy(req) ? String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean) : [];
     return fwd.length ? fwd[fwd.length - 1] : req.socket.remoteAddress || '?';
   }
 

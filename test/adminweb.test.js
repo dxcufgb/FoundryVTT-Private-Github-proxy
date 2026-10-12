@@ -169,6 +169,31 @@ test('without ADMIN_TRUST_PROXY forwarded headers are ignored', async () => {
   }
 });
 
+test('forwarded headers count only from the listed proxy addresses', async () => {
+  // the test client connects from 127.0.0.1, which is not the listed proxy
+  const s = await start({ trustProxy: ['192.0.2.9'], hosts: ['admin.example.com'] });
+  try {
+    const fwd = { Host: 'admin.example.com', 'X-Forwarded-Proto': 'https' };
+    const res = await login('http', s.port, { headers: fwd });
+    assert.doesNotMatch(res.headers['set-cookie'][0], /Secure/);
+    for (let i = 0; i < 5; i++) {
+      await login('http', s.port, { password: 'wrong wrong', headers: { ...fwd, 'X-Forwarded-For': `203.0.113.${i}` } });
+    }
+    // a faked X-Forwarded-For per attempt does not dodge the per-address lockout
+    assert.equal((await login('http', s.port, { headers: { ...fwd, 'X-Forwarded-For': '198.51.100.1' } })).status, 429);
+  } finally {
+    await s.close();
+  }
+  // a listed address (here the loopback the test connects from) is trusted
+  const t = await start({ trustProxy: ['127.0.0.1'], hosts: ['admin.example.com'] });
+  try {
+    const res = await login('http', t.port, { headers: { Host: 'admin.example.com', 'X-Forwarded-Proto': 'https' } });
+    assert.match(res.headers['set-cookie'][0], /; Secure/);
+  } finally {
+    await t.close();
+  }
+});
+
 test('too many failed logins from many addresses pause all logins', async () => {
   const s = await start({ trustProxy: true });
   try {

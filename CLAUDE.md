@@ -107,8 +107,8 @@ installs new releases of the proxy itself.
   Login lockout after 5 failures. Strict CSP (no inline script/style: the UI only uses `textContent`). Neither the GitHub
   token, the password hash nor the SMTP password may appear in a response or a log line (tested).
 - **Admin port**: never serves module routes (they have no auth). Host allowlist = localhost, this machine's names and
-  interface addresses, `PUBLIC_BASE_URL`/`ADMIN_PUBLIC_URL` hosts, `ADMIN_HOSTS`. `X-Forwarded-*` only with
-  `ADMIN_TRUST_PROXY`. No HSTS (self-signed certificates would become un-bypassable). The certificate files are
+  interface addresses, `PUBLIC_BASE_URL`/`ADMIN_PUBLIC_URL` hosts, `ADMIN_HOSTS`. `X-Forwarded-*` only from a peer that
+  `ADMIN_TRUST_PROXY` names (`1` = loopback, or a list of IPs); anyone else could fake them past the lockout. No HSTS (self-signed certificates would become un-bypassable). The certificate files are
   root-owned, readable by the service. Installers only change `ADMIN_*` lines in `env` on an explicit option
   (`--admin-web`, `-AdminWeb`, first-install prompt).
 - The proxy's account may rewrite `config.json`/`admin.json` in place but never create files in the settings folder

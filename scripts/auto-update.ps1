@@ -14,6 +14,9 @@ Normally run as SYSTEM by the scheduled task "FoundryReleaseProxy-Update" that
 The release lookup, version comparison, download and checksum check are in src\updater.js; this script only locks,
 extracts, backs up, installs and rolls back. config.json and env are never touched. The GitHub token is read from
 the file named in auto-update.conf and never logged. Log: C:\ProgramData\FoundryReleaseProxy\auto-update.log
+
+-Apply e-mails the recipients in admin.json (installer or admin page) when it installed a new version or failed
+(src\notify.js; a failed e-mail is only logged).
 #>
 [CmdletBinding()]
 param(
@@ -31,6 +34,7 @@ $BackupDir = "$AppDir.prev"
 $DataDir = Join-Path $env:ProgramData $AppName
 $AutoConf = Join-Path $DataDir 'auto-update.conf'
 $LogFile = Join-Path $DataDir 'auto-update.log'
+$EnvFile = Join-Path $DataDir 'env'
 $TaskName = $AppName
 
 function Write-ProxyLog([string]$Message) {
@@ -54,6 +58,19 @@ function Get-Setting([string]$Key) {
         if ($line.StartsWith("$Key=")) { $value = $line.Substring($Key.Length + 1) }
     }
     $value
+}
+
+# E-mails the notification recipients; never throws (a notification must not change the update's outcome).
+function Send-Notification([string]$Node, [string]$Subject, [string]$Message) {
+    $script = Join-Path $AppDir 'src\notify.js'
+    if (-not (Test-Path -LiteralPath $script) -or -not (Test-Path -LiteralPath (Join-Path $DataDir 'admin.json'))) { return }
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $Node $script --proxy-env $EnvFile --subject $Subject --message $Message 2>&1 | ForEach-Object { Write-ProxyLog "$_" }
+    }
+    catch {
+        Write-ProxyLog "notification e-mail failed: $($_.Exception.Message)"
+    }
 }
 
 function Test-ProxyRunning {
@@ -176,6 +193,8 @@ function Invoke-Update {
     }
     if ($ok) {
         Write-ProxyLog "updated $installed -> $version"
+        $script:UpdatedFrom = $installed
+        $script:UpdatedTo = $version
         return 0
     }
 
@@ -207,12 +226,21 @@ function Invoke-Update {
 }
 
 $exitCode = 1
+$UpdatedTo = ''
+$UpdatedFrom = ''
 try {
     $exitCode = Invoke-Update
+    if ($Apply -and $UpdatedTo) {
+        Send-Notification $node "updated to $UpdatedTo" "The Foundry release proxy updated itself from $UpdatedFrom to $UpdatedTo."
+    }
 }
 catch {
     Write-ProxyLog "ERROR: $($_.Exception.Message)"
     $exitCode = 1
+    if ($Apply) {
+        Send-Notification $node 'automatic update failed' ("The automatic update of the Foundry release proxy failed: " +
+            "$($_.Exception.Message) (log: $LogFile)")
+    }
 }
 finally {
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }

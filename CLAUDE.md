@@ -9,12 +9,21 @@ installs new releases of the proxy itself.
 
 ## Layout
 - `src/server.js` – the HTTP proxy (everything except self-update). Exports `createApp`, `loadConfig`, `parseConfig`, `ConfigError`;
-  `main()` only runs when executed directly.
+  `main()` only runs when executed directly. Hands `/_admin` to `src/admin.js` when the admin page is on.
+- `src/admin.js` – the password-protected admin page (`/_admin/`, UI files in `src/admin-ui/`): JSON API to list/add/edit/
+  delete modules (validated with `parseConfig`, written back to `config.json` in place), notification settings, password
+  change. Settings in `admin.json` (`ADMIN_FILE`, default next to `CONFIG_FILE`): scrypt `passwordHash` + `notify`
+  (recipients, SMTP). Off (404) without a password hash. CLI: `setup FILE` (installers; secrets via `FOUNDRY_PROXY_*` env),
+  `check FILE`.
+- `src/mailer.js` – minimal SMTP client (STARTTLS / TLS / plain relay, AUTH PLAIN/LOGIN only over TLS). `src/notify.js` –
+  `--proxy-env FILE --subject --message`: mails the `admin.json` recipients; called by the auto-update scripts (not
+  `--env-file`: Node itself grabs that flag even after the script name).
 - `src/updater.js` – self-update helper for the proxy itself (not for Foundry modules): `--check` /
   `--download` the latest release of this repo (`foundry-release-proxy-<version>-linux.tar.gz` / `-windows.zip`), verify it
   against `SHA256SUMS.txt`. Exit 0 = up to date, 10 = update available/downloaded, 1 = error. No fallback to the legacy
   names: a newer release without the new ones is an error. Installing is left to the scripts.
-- `test/server.test.js`, `test/updater.test.js` – `node:test` suites with an injected `fetchImpl` mock
+- `test/server.test.js`, `test/updater.test.js`, `test/admin.test.js` (admin API, mailer against a fake SMTP server,
+  notifier) – `node:test` suites with an injected `fetchImpl` mock
   (no network).
 - `install.sh` – the single Linux entry point, at the top of the Linux archive (the one-liner of `dxcufgb/install` runs it
   as root): finds a system-wide Node (>= 18) or downloads the official Node 22 (SHA-256 checked) to
@@ -51,7 +60,7 @@ installs new releases of the proxy itself.
 ## Commands
 - `npm test` – the unit tests. `npm start` – run the server.
 - Local run: `GITHUB_TOKEN=... CONFIG_FILE=config.example.json node src/server.js`
-- CI (`.github/workflows/ci.yml`): `node --check` on `src/server.js` and `src/updater.js` + `npm test` on
+- CI (`.github/workflows/ci.yml`): `node --check` on `src/*.js` and `src/admin-ui/app.js` + `npm test` on
   Node 20/22/24, `shellcheck install.sh scripts/*.sh`, PSScriptAnalyzer on `scripts/*.ps1` and `packaging/windows/*.ps1`, an
   `install.sh` run under systemd on the runner, and a silent install/uninstall of the Inno Setup exe on a Windows runner. Workflow changes are
   linted by actionlint and zizmor.
@@ -87,10 +96,17 @@ installs new releases of the proxy itself.
   already allows `.`/`..` in a repo name, so do not rely on it for path safety.
 - Rewritten links always use `PUBLIC_BASE_URL`, never the request's `Host` header.
 - Every response is `Cache-Control: no-store`; any caching added must not outlive pre-signed URLs.
-- Only GET and HEAD are allowed. There is no inbound auth – access control is binding to
-  127.0.0.1 (or the Docker bridge); never default to `0.0.0.0`.
+- Only GET and HEAD are allowed on the proxy routes; `/_admin/api` alone takes POST/PUT/DELETE. The proxy routes have no
+  inbound auth – access control is binding to 127.0.0.1 (or the Docker bridge); never default to `0.0.0.0`.
+- **Admin page**: every API call but login needs the session cookie (HttpOnly, SameSite=Strict, Path=/_admin); every
+  change also the `X-CSRF-Token` and `Content-Type: application/json`; unknown `Host`/`Origin` → 403 (DNS rebinding).
+  Login lockout after 5 failures. Strict CSP (no inline script/style: the UI only uses `textContent`). Neither the GitHub
+  token, the password hash nor the SMTP password may appear in a response or a log line (tested).
+- The proxy's account may rewrite `config.json`/`admin.json` in place but never create files in the settings folder
+  (Linux: files owned by the service user, `ReadWritePaths=` exactly these two; Windows: LOCAL SERVICE `(R,W)`, no
+  delete). Root never parses `admin.json`: `auto-update.sh` runs `notify.js` as the service user via `setpriv`.
 - GitHub's 404 for a repo the token cannot see must stay a 404, not a 502.
-- Installer: re-running it must never overwrite `/etc/foundry-release-proxy/config.json` or
+- Installer: re-running it must never overwrite `/etc/foundry-release-proxy/config.json`, `admin.json` or
   `env`; `env` stays mode 600 owned by the service user; keep the systemd hardening and keep the
   script clean under shellcheck.
 - **Auto-update** stays opt-in and runs as root (Linux) / SYSTEM (Windows). Its token is the proxy's

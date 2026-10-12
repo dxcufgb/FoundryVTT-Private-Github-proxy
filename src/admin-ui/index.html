@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Foundry Release Proxy</title>
+  <link rel="stylesheet" href="/_admin/app.css">
+  <script src="/_admin/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Foundry Release Proxy <span class="sub">administration</span></h1>
+    <button type="button" id="logout" class="secondary" hidden>Log out</button>
+  </header>
+
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+
+  <main>
+    <section id="login-view" class="card narrow" hidden>
+      <h2>Log in</h2>
+      <form id="login-form">
+        <label>Password <input type="password" name="password" autocomplete="current-password" required autofocus></label>
+        <p class="error" id="login-error" hidden></p>
+        <button type="submit">Log in</button>
+      </form>
+    </section>
+
+    <div id="app-view" hidden>
+      <section class="card">
+        <div class="section-head">
+          <h2>Modules</h2>
+          <button type="button" id="add-module">Add module</button>
+        </div>
+        <p class="hint">Each module is a private GitHub repository the proxy serves. Give Foundry the module's link
+          (<em>Manifest URL</em> in <em>Install Module</em>); <strong>Copy link</strong> puts it on the clipboard.</p>
+        <div class="table-wrap">
+          <table id="modules">
+            <thead>
+              <tr><th>Module id</th><th>Repository</th><th>Release assets</th><th>Link for Foundry</th><th class="actions-col">Actions</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="no-modules" class="empty" hidden>No modules yet. Use <strong>Add module</strong> to add a repository.</p>
+      </section>
+
+      <section class="card">
+        <h2>Update notifications</h2>
+        <p class="hint">When the proxy updates itself (or an automatic update fails) it sends an e-mail to every address
+          below. Automatic updates are turned on with the installer.</p>
+        <form id="notify-form">
+          <fieldset>
+            <legend>Recipients</legend>
+            <ul id="recipients" class="chips"></ul>
+            <div class="inline">
+              <input type="email" id="recipient-input" placeholder="name@example.com" aria-label="E-mail address to add">
+              <button type="button" id="recipient-add" class="secondary">Add address</button>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>Mail server (SMTP)</legend>
+            <div class="grid">
+              <label>Server <input name="host" placeholder="smtp.example.com" autocomplete="off"></label>
+              <label>Port <input name="port" type="number" min="1" max="65535" value="587"></label>
+              <label>Security
+                <select name="security">
+                  <option value="starttls">STARTTLS (usually port 587)</option>
+                  <option value="tls">TLS (usually port 465)</option>
+                  <option value="none">None (local relay, no login)</option>
+                </select>
+              </label>
+              <label>Sender address <input name="from" type="email" placeholder="proxy@example.com"></label>
+              <label>User name <input name="user" autocomplete="off"></label>
+              <label>Password <input name="password" type="password" autocomplete="new-password" placeholder="(unchanged)"></label>
+            </div>
+            <label class="check" id="clear-password-row" hidden><input type="checkbox" name="clearPassword"> Remove the stored password</label>
+          </fieldset>
+          <div class="buttons">
+            <button type="submit">Save</button>
+            <button type="button" id="notify-test" class="secondary">Send test e-mail</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card narrow">
+        <h2>Admin password</h2>
+        <form id="password-form">
+          <label>Current password <input type="password" name="current" autocomplete="current-password" required></label>
+          <label>New password <input type="password" name="password" autocomplete="new-password" minlength="8" required></label>
+          <label>Repeat new password <input type="password" name="repeat" autocomplete="new-password" minlength="8" required></label>
+          <button type="submit">Change password</button>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="module-dialog">
+    <form id="module-form" method="dialog">
+      <h2 id="module-dialog-title">Add module</h2>
+      <label>Module id <input name="moduleId" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]*" placeholder="transformations">
+        <small>Letters, digits, "-" and "_"; usually the module's id in module.json. It is part of the link.</small></label>
+      <label>GitHub repository <input name="repo" required pattern="[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+" placeholder="owner/name"></label>
+      <details>
+        <summary>Release asset names</summary>
+        <label>Manifest asset <input name="manifestAsset" placeholder="module.json"></label>
+        <label>Zip asset <input name="zipAsset" placeholder="module.zip"></label>
+      </details>
+      <p class="error" id="module-error" hidden></p>
+      <div class="buttons">
+        <button type="submit" value="save">Save</button>
+        <button type="button" class="secondary" id="module-cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

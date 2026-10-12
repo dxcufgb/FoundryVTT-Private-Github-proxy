@@ -1,7 +1,9 @@
 'use strict';
 // Self-update helper for the proxy itself (not for Foundry modules). Looks up the latest GitHub release of this
 // repository, compares it with the installed version and, if it is strictly newer, downloads the release archive
-// and verifies it against the release's SHA256SUMS. Installing is left to the install scripts.
+// (foundry-release-proxy-<version>-linux.tar.gz or -windows.zip) and verifies it against the release's SHA256SUMS.txt.
+// Installing is left to the install scripts. A newer release without these files (only releases before 1.2.0 have
+// the old names) is reported as an error and nothing is installed; there is no fallback to the old names.
 //
 //   node src/updater.js --check    --token-file FILE [--app-dir DIR]
 //   node src/updater.js --download DIR --token-file FILE [--app-dir DIR] [--format tar.gz|zip]
@@ -18,6 +20,7 @@ const crypto = require('node:crypto');
 const REPO = 'dxcufgb/FoundryVTT-Private-Github-proxy';
 const GITHUB_API = 'https://api.github.com';
 const PACKAGE = 'foundry-release-proxy';
+const SUMS_NAME = 'SHA256SUMS.txt';
 const API_TIMEOUT_MS = 20000;
 const DOWNLOAD_TIMEOUT_MS = 120000;
 const MAX_JSON_BYTES = 1024 * 1024;
@@ -69,7 +72,7 @@ function parseSha256Sums(text) {
   for (const line of String(text).split(/\r?\n/)) {
     if (!line.trim() || line.startsWith('#')) continue;
     const m = /^([0-9a-fA-F]{64}) [ *](.+)$/.exec(line.trimEnd());
-    if (!m) throw new UpdateError('SHA256SUMS has a malformed line');
+    if (!m) throw new UpdateError(`${SUMS_NAME} has a malformed line`);
     sums[m[2]] = m[1].toLowerCase();
   }
   return sums;
@@ -77,19 +80,20 @@ function parseSha256Sums(text) {
 
 /** Return the release filename for a version and format; reject formats other than tar.gz or zip. */
 function archiveName(version, format) {
-  if (format !== 'tar.gz' && format !== 'zip') throw new UpdateError(`unknown archive format "${format}"`);
-  return `${PACKAGE}-${version}.${format}`;
+  if (format === 'tar.gz') return `${PACKAGE}-${version}-linux.tar.gz`;
+  if (format === 'zip') return `${PACKAGE}-${version}-windows.zip`;
+  throw new UpdateError(`unknown archive format "${format}"`);
 }
 
-/** Picks the archive and SHA256SUMS assets of a release. */
+/** Picks the archive and SHA256SUMS.txt assets of a release. */
 function selectAssets(release, format) {
   const version = String(release.tag_name).replace(/^v/, '');
   const name = archiveName(version, format);
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const archive = assets.find((a) => a && a.name === name);
-  const sums = assets.find((a) => a && a.name === 'SHA256SUMS');
-  if (!archive) throw new UpdateError(`release ${release.tag_name} has no asset ${name}`);
-  if (!sums) throw new UpdateError(`release ${release.tag_name} has no SHA256SUMS asset`);
+  const sums = assets.find((a) => a && a.name === SUMS_NAME);
+  if (!archive) throw new UpdateError(`release ${release.tag_name} has no asset ${name}; nothing installed`);
+  if (!sums) throw new UpdateError(`release ${release.tag_name} has no ${SUMS_NAME} asset; nothing installed`);
   return { archive, sums };
 }
 
@@ -231,7 +235,7 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
     const { archive, sums } = selectAssets(release, format);
     const sumsText = (await downloadAsset(sums, MAX_SUMS_BYTES)).toString('utf8');
     const expected = parseSha256Sums(sumsText)[archive.name];
-    if (!expected) throw new UpdateError(`SHA256SUMS has no entry for ${archive.name}`);
+    if (!expected) throw new UpdateError(`${SUMS_NAME} has no entry for ${archive.name}`);
     const data = await downloadAsset(archive, MAX_ARCHIVE_BYTES);
     const actual = crypto.createHash('sha256').update(data).digest('hex');
     if (actual !== expected) throw new UpdateError(`checksum mismatch for ${archive.name}`);

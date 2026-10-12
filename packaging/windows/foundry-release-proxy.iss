@@ -1,7 +1,7 @@
 ; Inno Setup script for the Foundry release proxy (Windows).
 ;
 ; Build:  packaging\windows\build-installer.ps1   (downloads Node.js, then runs ISCC with the defines below)
-;   ISCC /DAppVersion=1.2.3 /DNodeExe=<node.exe> /DNodeLicense=<LICENSE> /O<out dir> foundry-release-proxy.iss
+;   ISCC /DAppVersion=1.2.3 [/DRepoRoot=<source folder>] /DNodeExe=<node.exe> /DNodeLicense=<LICENSE> /O<out dir> foundry-release-proxy.iss
 ;
 ; The installer is a wizard around scripts\install-service.ps1: it copies the code to
 ; C:\Program Files\FoundryReleaseProxy, installs a private Node.js next to it (the proxy runs as LOCAL SERVICE, so
@@ -11,7 +11,7 @@
 ;
 ; Silent install:
 ;   set FOUNDRY_PROXY_GITHUB_TOKEN=github_pat_...
-;   FoundryReleaseProxy-Setup-X.Y.Z.exe /VERYSILENT /SUPPRESSMSGBOXES /MODULEID=transformations /REPO=owner/name /AUTOUPDATE=1
+;   foundry-release-proxy-X.Y.Z-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /MODULEID=transformations /REPO=owner/name /AUTOUPDATE=1
 ; Silent uninstall keeps config and token; add /DELETEDATA=1 to remove C:\ProgramData\FoundryReleaseProxy as well.
 
 #ifndef AppVersion
@@ -27,7 +27,10 @@
 #define AppName "Foundry Release Proxy"
 #define DataFolder "FoundryReleaseProxy"
 #define NodeFolder "FoundryReleaseProxy-Node"
-#define RepoRoot "..\.."
+; The files to pack: this repository, or (release builds) the unpacked Windows archive with the version stamped in.
+#ifndef RepoRoot
+  #define RepoRoot "..\.."
+#endif
 
 [Setup]
 AppId={{C8D7F34D-E87D-4D25-930B-EDDD67F22470}
@@ -47,7 +50,7 @@ MinVersion=10.0
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-OutputBaseFilename=FoundryReleaseProxy-Setup-{#AppVersion}
+OutputBaseFilename=foundry-release-proxy-{#AppVersion}-setup
 UninstallDisplayName={#AppName}
 ; The proxy is stopped by PrepareToInstall; there is no application window for Restart Manager to close.
 CloseApplications=no

@@ -11,15 +11,20 @@ installs new releases of the proxy itself.
 - `src/server.js` – the HTTP proxy (everything except self-update). Exports `createApp`, `loadConfig`, `parseConfig`, `ConfigError`;
   `main()` only runs when executed directly.
 - `src/updater.js` – self-update helper for the proxy itself (not for Foundry modules): `--check` /
-  `--download` the latest release of this repo, verify it against `SHA256SUMS`. Exit 0 = up to date,
-  10 = update available/downloaded, 1 = error. Installing is left to the scripts.
+  `--download` the latest release of this repo (`foundry-release-proxy-<version>-linux.tar.gz` / `-windows.zip`), verify it
+  against `SHA256SUMS.txt`. Exit 0 = up to date, 10 = update available/downloaded, 1 = error. No fallback to the legacy
+  names: a newer release without the new ones is an error. Installing is left to the scripts.
 - `test/server.test.js`, `test/updater.test.js` – `node:test` suites with an injected `fetchImpl` mock
   (no network).
-- `install.sh` – Linux entry point: finds a system-wide Node (>= 18) or downloads the official Node 22 (SHA-256 checked) to
+- `install.sh` – the single Linux entry point, at the top of the Linux archive (the one-liner of `dxcufgb/install` runs it
+  as root): finds a system-wide Node (>= 18) or downloads the official Node 22 (SHA-256 checked) to
   `/opt/foundry-release-proxy-node`, exports `NODE_BIN`, then runs `scripts/install-service.sh` (passes its options on).
-- `scripts/install-service.sh` – systemd installer (`sudo`; `--module ID=OWNER/REPO`, `--auto-update`, `--enable-auto-update`,
-  `--disable-auto-update`, `--check`, `--update-now`, `--uninstall`). Code in `/opt/foundry-release-proxy`
-  (root-owned), settings in `/etc/foundry-release-proxy/`.
+  Common option set of the four repos: `--yes`/`-y`, `--auto-update`/`--no-auto-update`, `--enable-auto-update`/
+  `--disable-auto-update`, `--check-update` (0 / 10 / other), `--update-now`, `--uninstall [--purge]`, `--help`.
+- `scripts/install-service.sh` – systemd installer (`sudo`; the common options plus `--module ID=OWNER/REPO`, `--check`
+  (alias), `--upgrade` (used by the updater)). Code in `/opt/foundry-release-proxy` (root-owned), settings in
+  `/etc/foundry-release-proxy/`. Updater token: `UPDATER_GITHUB_TOKEN`, the configured one, `INSTALL_GITHUB_TOKEN` (from
+  the one-liner; asked first when interactive), a prompt, or the proxy's `GITHUB_TOKEN`.
 - `scripts/auto-update.sh` – run as root by the `foundry-release-proxy-update` timer: locks, extracts,
   backs up to `/opt/foundry-release-proxy.prev`, runs `install-service.sh --upgrade`, rolls back on failure.
 - `scripts/install-service.ps1`, `scripts/auto-update.ps1` – the same for Windows: code in
@@ -27,13 +32,16 @@ installs new releases of the proxy itself.
   runs as LOCAL SERVICE, the daily update task as SYSTEM.
 - `packaging/windows/` – the Inno Setup installer: `foundry-release-proxy.iss` (wizard + bundled Node.js in
   `Program Files\FoundryReleaseProxy-Node`, then runs `install-service.ps1 -Upgrade`), `stop-proxy.ps1`,
-  `build-installer.ps1` (downloads and verifies Node, runs ISCC) and `smoke-test.ps1` (silent install/uninstall, run by CI).
-- `scripts/build-release.sh` – builds the `.tar.gz` (Linux), `.zip` (Windows), copies of both under fixed names
-  (`foundry-release-proxy-linux.tar.gz`, `-windows.zip`, for `releases/latest/download/` links) and `SHA256SUMS`;
+  `build-installer.ps1` (downloads and verifies Node, stamps `-Version` into a staged copy, runs ISCC, writes
+  `foundry-release-proxy-<version>-setup.exe`) and `smoke-test.ps1` (silent install/uninstall, run by CI).
+- `scripts/build-release.sh OUT VERSION` – builds `foundry-release-proxy-<version>-linux.tar.gz` and `-windows.zip` with
+  VERSION stamped into the packed `package.json`; `--finish OUT VERSION` adds the fixed-name copies
+  (`foundry-release-proxy-linux.tar.gz`, `-windows.zip`, `-setup.exe`), the legacy copies (the `LEGACY_ASSETS` block:
+  names of 1.1.1 and older plus `SHA256SUMS`, for the updaters of old installs) and `SHA256SUMS.txt` over all files.
   `scripts/release-notes.sh` prints the per-OS download table that heads the release notes.
-  `.github/workflows/release.yml` runs them on a `v*` tag or a manual run on `main` (tags `v<package.json version>`),
-  builds the Windows installer on a Windows runner (plus a `FoundryReleaseProxy-Setup.exe` copy) and publishes the
-  release (a draft until the installer is attached).
+  `.github/workflows/release.yml`: Actions → Release → Run workflow → type the version (or publish a release `vX.Y.Z` by
+  hand; files are attached afterwards). It runs `ci.yml` (workflow_call), the build, the Windows installer, then
+  publishes (draft first; a leftover draft is replaced, a moved tag stops it).
 - `.github/ruleset-protect-main.json` – the "Protect main" ruleset (squash only, 1 approval, required CI checks), the same
   as in the other FoundryVTT repos; importable only on a plan that allows rulesets on private repos. Keep its check names in
   step with the job names in `ci.yml` (only jobs that run on every PR belong in it). `.github/` also holds the PR and issue
@@ -47,6 +55,13 @@ installs new releases of the proxy itself.
   Node 20/22/24, `shellcheck install.sh scripts/*.sh`, PSScriptAnalyzer on `scripts/*.ps1` and `packaging/windows/*.ps1`, an
   `install.sh` run under systemd on the runner, and a silent install/uninstall of the Inno Setup exe on a Windows runner. Workflow changes are
   linted by actionlint and zizmor.
+
+## Install on Linux and releasing
+- **Install on Linux**: `curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s foundry-release-proxy`
+  (private repo: it asks for a fine-grained token with read-only *Contents* access to this repository), or download
+  `foundry-release-proxy-linux.tar.gz`, `tar xzf`, `cd foundry-release-proxy-X.Y.Z`, `sudo ./install.sh`. Options: see the README.
+- **Releasing**: Actions → Release → Run workflow → type the version. Fallback: publish a release `vX.Y.Z` on GitHub,
+  files are attached afterwards. No version bump in the code.
 
 ## Conventions
 - CommonJS, `'use strict'`, **no npm dependencies** – Node built-ins and global `fetch` only.
@@ -79,14 +94,15 @@ installs new releases of the proxy itself.
   script clean under shellcheck.
 - **Auto-update** stays opt-in and runs as root (Linux) / SYSTEM (Windows). Its token is the proxy's
   `GITHUB_TOKEN` from `env` or a separate `updater-token` (root 600 / Administrators+SYSTEM only); it goes
-  only to `api.github.com` and is never on a command line or in a log. Downloads must match `SHA256SUMS`;
+  only to `api.github.com` and is never on a command line or in a log. Downloads must match `SHA256SUMS.txt`;
   only strictly newer, non-draft, non-prerelease versions install. Root/SYSTEM must never run code a
   non-admin account can change: the Linux code folder stays `root:root`, the Windows one stays under
   Program Files (admin-only write). Upgrades keep `config.json` and `env`; a failed install puts the
   previous code back.
 - `main` is protected by convention (and by the ruleset where the plan allows): changes go through pull requests, merged
   with squash.
-- **Versions**: the release tag must be `v<package.json version>` (checked by `release.yml`).
+- **Versions**: the version comes from the release tag; nobody bumps `package.json` (it keeps the last release's
+  version). The build stamps the tag's version into the built copy, which is what the updater compares.
 - The Windows installer must not duplicate `install-service.ps1`: the wizard only collects answers, writes `config.json`
   if absent and calls the script (token via `FOUNDRY_PROXY_GITHUB_TOKEN`, never on a command line). Node.js stays outside the
   code folder because the updater replaces that folder.

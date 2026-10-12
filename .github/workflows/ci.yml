@@ -1,4 +1,4 @@
-# Runs on every push and pull request:
+# Runs on every push and pull request, and as the "ci" job of release.yml (workflow_call) before anything is published:
 #   - the unit tests (node --test) on every supported Node version
 #   - a syntax check of the server entry point and the updater
 #   - shellcheck on the Linux scripts
@@ -12,12 +12,15 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
+# github.workflow is the caller's name when release.yml calls this file, so a release's CI run and a push's CI run on
+# the same ref never cancel each other
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,11 +35,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
+          package-manager-cache: false
 
       - name: Entry points parse
         run: |
@@ -53,6 +59,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Shellcheck the scripts
@@ -65,6 +73,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       # PSScriptAnalyzer ships with the runner image; the scripts themselves target Windows PowerShell 5.1.
@@ -91,6 +101,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Install with the system Node.js
@@ -138,6 +150,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # the event's commit, not a ref that can move during the run (a release's tag)
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Inno Setup (if the runner image lacks it)

@@ -58,30 +58,53 @@ updater; no network needed).
 then on the Pi `sudo nano /etc/foundry-release-proxy/env`, replace `GITHUB_TOKEN`, and
 `sudo systemctl restart foundry-release-proxy`. Delete the old token on GitHub afterwards.
 
-## 2. Install on the Pi (Linux)
+## 2. Install on Linux (Raspberry Pi)
 
 ```bash
-git clone https://github.com/dxcufgb/foundryvtt-private-github-proxy.git
-cd foundryvtt-private-github-proxy
+curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s foundry-release-proxy
+```
+
+This repository is private, so the one-liner asks for a fine-grained GitHub token with read-only *Contents* access to
+this repository (it only uses it to download the release). Or download `foundry-release-proxy-linux.tar.gz` from the
+[latest release](https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest) and run:
+
+```bash
+tar xzf foundry-release-proxy-linux.tar.gz
+cd foundry-release-proxy-X.Y.Z
 sudo ./install.sh
 ```
 
-(or unpack `foundry-release-proxy-<version>.tar.gz` from the
-[releases](https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases) page and run the same `./install.sh`).
+| Option | Meaning |
+| --- | --- |
+| (none) | install or upgrade in place, interactive (asks for what it needs) |
+| `--yes`, `-y` | non-interactive: no questions; missing required settings → clear error |
+| `--auto-update` / `--no-auto-update` | turn automatic updates on / off as part of this install |
+| `--enable-auto-update` / `--disable-auto-update` | turn them on / off on an existing install, nothing else |
+| `--check-update` | only check: exit 0 = up to date, 10 = newer release available, other = error |
+| `--update-now` | install the latest release now (same path as the daily updater) |
+| `--uninstall` [`--purge`] | remove (keep / also delete settings and data) |
+| `--help` | usage listing exactly these first, then the repo-specific options |
 
-`install.sh` is the whole installer: it looks for a usable Node.js (18 or newer, system-wide, not nvm in a home
+Options of this installer: `--module ID=OWNER/REPO` (first install: put this module in `config.json`; repeatable),
+`--install-node` / `--no-install-node` (download Node.js without asking / never), and the older name `--check` (=
+`--check-update`). Tokens are never taken as arguments: the proxy's token comes from a hidden prompt or
+`FOUNDRY_PROXY_GITHUB_TOKEN`, the updater's from `UPDATER_GITHUB_TOKEN` or `INSTALL_GITHUB_TOKEN` (see
+[automatic updates](#automatic-updates)). With `--yes`, a first install needs `FOUNDRY_PROXY_GITHUB_TOKEN`, and Node.js is
+downloaded if none is usable.
+
+`install.sh` is the single entry point: it looks for a usable Node.js (18 or newer, system-wide, not nvm in a home
 directory, because the service runs as its own user). If there is none it offers to download the official Node.js 22
-for your CPU from nodejs.org (checked against nodejs.org's SHA-256, unpacked to `/opt/foundry-release-proxy-node`;
-`--install-node` does it without asking, `--no-install-node` never). Then it runs `scripts/install-service.sh`, which
-asks for the token and sets up the service. Unattended, with everything on the command line:
+for your CPU from nodejs.org (checked against nodejs.org's SHA-256, unpacked to `/opt/foundry-release-proxy-node`).
+Then it runs `scripts/install-service.sh` with the other options (that script still works on its own with the same
+options). Unattended, with everything on the command line:
 
 ```bash
 sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN env FOUNDRY_PROXY_GITHUB_TOKEN=github_pat_... \
-  ./install.sh --install-node --auto-update --module transformations=dxcufgb/FoundryVTT-ghpg-Transformations
+  ./install.sh --yes --auto-update --module transformations=dxcufgb/FoundryVTT-ghpg-Transformations
 ```
 
-(`--module ID=OWNER/REPO` can be repeated and only applies to a first install; the token travels in the environment, not
-as an argument. Without `--module` the example config is installed and you edit it afterwards.)
+(`--module` only applies to a first install. Without it the example config is installed and you edit it afterwards.)
+A clone of this repository works the same way (`git clone ...`, `cd`, `sudo ./install.sh`).
 
 The script creates a `foundry-proxy` system user and installs:
 
@@ -92,18 +115,13 @@ The script creates a `foundry-proxy` system user and installs:
 
 It asks for the token (input hidden); press Enter to skip and paste it into the `env` file later. The service is only
 started once a token is present. Then edit `/etc/foundry-release-proxy/config.json` if needed and restart.
+At the end it asks whether to turn on [automatic updates](#automatic-updates) (default: no).
 
-Instead of cloning you can unpack a release archive (`foundry-release-proxy-<version>.tar.gz` from the
-[releases](https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases) page, e.g.
-`gh release download --repo dxcufgb/FoundryVTT-Private-Github-proxy --pattern '*.tar.gz'`) and run the same script from it.
-
-At the end the script asks whether to turn on [automatic updates](#automatic-updates) (default: no).
-`sudo ./install.sh --auto-update` turns them on without asking.
-
-**Updating the proxy**: `git pull && sudo ./install.sh` (config, env and the auto-update choice are
-kept), or `sudo ./scripts/install-service.sh --update-now` to install the latest release.
-**Removing**: `sudo ./install.sh --uninstall` (removes the service, the updater timer, the updater
-token, the code and a Node.js that `install.sh` downloaded; keeps `/etc/foundry-release-proxy/config.json` and `env`).
+**Updating the proxy**: run the one-liner or `sudo ./install.sh` from a newer release again (config, env and the
+auto-update choice are kept), or `sudo ./install.sh --update-now` to install the latest release.
+**Removing**: `sudo ./install.sh --uninstall` (removes the service, the updater timer, the updater token, the code and a
+Node.js that `install.sh` downloaded; keeps `/etc/foundry-release-proxy/config.json` and `env`); add `--purge` to delete
+`/etc/foundry-release-proxy` and the `foundry-proxy` user as well.
 
 ### Check that it runs
 
@@ -118,8 +136,8 @@ Use the tag of a real release in the second command. Day to day: `sudo systemctl
 
 ## 2b. Install on Windows
 
-**With the installer (recommended).** Download `FoundryReleaseProxy-Setup-<version>.exe` from the
-[releases](https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases) page and run it (it asks for administrator
+**With the installer (recommended).** Download `foundry-release-proxy-<version>-setup.exe` (or
+`foundry-release-proxy-setup.exe`) from the [releases](https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases) page and run it (it asks for administrator
 rights). Nothing else has to be installed: it brings its own Node.js. The wizard asks for
 
 1. the GitHub token (hidden), the id of your first module (e.g. `transformations`) and its repository (`owner/name`),
@@ -128,14 +146,14 @@ rights). Nothing else has to be installed: it brings its own Node.js. The wizard
 and then installs the code, writes `config.json`, creates the data folder with locked-down permissions and registers
 the scheduled task that runs the proxy at boot, as described below. If a token and config already exist (installing a
 newer version over an old one) it does not ask again and keeps them. The installer is not code-signed, so Windows
-SmartScreen may say "Windows protected your PC": choose *More info → Run anyway*. Check the download against the
-`.sha256` file on the release page if you like (`Get-FileHash`).
+SmartScreen may say "Windows protected your PC": choose *More info → Run anyway*. Check the download against
+`SHA256SUMS.txt` on the release page if you like (`Get-FileHash`).
 
 Unattended install (PowerShell, as administrator; the token goes through the environment, not the command line):
 
 ```powershell
 $env:FOUNDRY_PROXY_GITHUB_TOKEN = 'github_pat_...'
-.\FoundryReleaseProxy-Setup-1.1.0.exe /VERYSILENT /SUPPRESSMSGBOXES /MODULEID=transformations /REPO=dxcufgb/FoundryVTT-ghpg-Transformations /AUTOUPDATE=1
+.\foundry-release-proxy-1.2.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /MODULEID=transformations /REPO=dxcufgb/FoundryVTT-ghpg-Transformations /AUTOUPDATE=1
 ```
 
 Uninstall from *Settings → Apps*, or `unins000.exe /VERYSILENT` in `C:\Program Files\FoundryReleaseProxy`. It removes
@@ -146,7 +164,7 @@ a newer installer to get a newer Node.js.
 
 **Without the installer (PowerShell).** Needs Node.js **20.6 or newer** installed for all users (the normal installer
 puts it in `C:\Program Files\nodejs`; not nvm in a user profile, because the proxy runs as `LOCAL SERVICE`). Download
-`foundry-release-proxy-<version>.zip` from the releases page, unpack it, and in an **elevated** Windows PowerShell
+`foundry-release-proxy-<version>-windows.zip` from the releases page, unpack it, and in an **elevated** Windows PowerShell
 (Run as administrator) in the unpacked folder:
 
 ```powershell
@@ -240,22 +258,25 @@ SYSTEM daily at 03:00 plus up to 6 hours of random delay.
 
 | | Linux | Windows (elevated PowerShell) |
 | --- | --- | --- |
-| turn on while installing | `sudo ./scripts/install-service.sh --auto-update` (or answer `y` to the prompt) | `.\scripts\install-service.ps1 -AutoUpdate` |
-| turn on later | `sudo ./scripts/install-service.sh --enable-auto-update` | `.\scripts\install-service.ps1 -EnableAutoUpdate` |
-| turn off | `sudo ./scripts/install-service.sh --disable-auto-update` | `.\scripts\install-service.ps1 -DisableAutoUpdate` |
-| check only (exit 0 = current, 10 = update available) | `sudo ./scripts/install-service.sh --check` | `.\scripts\install-service.ps1 -Check` |
-| update now | `sudo ./scripts/install-service.sh --update-now` | `.\scripts\install-service.ps1 -UpdateNow` |
+| turn on while installing | `sudo ./install.sh --auto-update` (or answer `y` to the prompt) | `.\scripts\install-service.ps1 -AutoUpdate` |
+| turn on later | `sudo ./install.sh --enable-auto-update` | `.\scripts\install-service.ps1 -EnableAutoUpdate` |
+| turn off | `sudo ./install.sh --disable-auto-update` | `.\scripts\install-service.ps1 -DisableAutoUpdate` |
+| check only (exit 0 = current, 10 = update available) | `sudo ./install.sh --check-update` | `.\scripts\install-service.ps1 -Check` |
+| update now | `sudo ./install.sh --update-now` | `.\scripts\install-service.ps1 -UpdateNow` |
 | log | `journalctl -u foundry-release-proxy-update` | `C:\ProgramData\FoundryReleaseProxy\auto-update.log` |
 
+On Linux `sudo ./scripts/install-service.sh` takes the same options (`--check` is the older name of `--check-update`).
 The commands also work from the installed copy (`/opt/foundry-release-proxy/scripts/install-service.sh`,
 `C:\Program Files\FoundryReleaseProxy\scripts\install-service.ps1`). Re-running the installer keeps the choice
 (`auto-update.conf` next to `env`; `--no-auto-update` / `-NoAutoUpdate` turn it off while re-installing).
-`--check` and `--update-now` work whether or not the daily updates are on.
+`--check-update` and `--update-now` work whether or not the daily updates are on. While another update run holds the lock,
+`--check-update` (`-Check`) exits 75 ("could not check") instead of 0 or 10.
 
 **What an update does**: `src/updater.js` asks `https://api.github.com/repos/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest`
 (drafts and pre-releases never count) and compares the tag with the installed `package.json` version by semantic
-versioning; only a strictly newer release is installed. It downloads `SHA256SUMS` and the archive
-(`.tar.gz` on Linux, `.zip` on Windows) through the API asset URL, follows GitHub's redirect to the pre-signed
+versioning; only a strictly newer release is installed (the version of an installed copy is the one stamped into its
+`package.json` when the release was built). It downloads `SHA256SUMS.txt` and the archive
+(`foundry-release-proxy-<version>-linux.tar.gz` on Linux, `-windows.zip` on Windows) through the API asset URL, follows GitHub's redirect to the pre-signed
 download **without** the token, refuses anything that is not HTTPS or larger than 20 MB, and checks the archive's
 SHA-256. The script then unpacks it into a fresh temporary folder (refusing paths outside the archive's top folder),
 copies the current code to `/opt/foundry-release-proxy.prev` (`C:\Program Files\FoundryReleaseProxy.prev`), runs the
@@ -276,6 +297,10 @@ When you turn updates on you can:
   `/etc/foundry-release-proxy/updater-token` (root, `600`) or `C:\ProgramData\FoundryReleaseProxy\updater-token`
   (Administrators and SYSTEM only). Turning updates off or uninstalling deletes it.
 
+The one-line Linux installer exports the token it downloaded the release with as `INSTALL_GITHUB_TOKEN`; that token
+can read this repository, so when you turn automatic updates on, `install.sh` stores it as the updater token (asking
+first when interactive; with `--yes` it does so without asking). An updater token that is already configured is kept.
+
 The token is only sent to `api.github.com` and is never logged. When it expires, update `env` (or `updater-token`); a
 failing check shows up in the update log as `HTTP 401`/`HTTP 404`.
 
@@ -285,43 +310,52 @@ downtime). The previous version stays in the `.prev` folder until the next updat
 
 ## Releases
 
-1. Bump `version` in `package.json` (e.g. `1.2.0`) and merge it to `main`.
-2. Start the release, either way:
-   - *Actions → Release → Run workflow* on `main`: releases main's head as `v` + its `package.json` version (refused if
-     that tag already exists; the tag is created on that commit when the release is published), or
-   - tag the commit yourself and push the tag: `git tag v1.2.0 && git push origin v1.2.0` (the tag must equal `v` + the
-     `package.json` version).
-3. `.github/workflows/release.yml` runs the tests, builds `foundry-release-proxy-<version>.tar.gz`,
-   `foundry-release-proxy-<version>.zip`, the same two as `foundry-release-proxy-linux.tar.gz` and
-   `foundry-release-proxy-windows.zip`, and `SHA256SUMS` with `scripts/build-release.sh`, and publishes the GitHub
-   release. Installs with automatic updates pick it up within a day.
+**Releasing**: *Actions → Release → Run workflow* → type the version (e.g. `1.2.3`; a leading `v` is dropped,
+`1.2.3-rc.1` makes a pre-release). Fallback: publish a release `vX.Y.Z` on GitHub; the files are attached afterwards.
+No version bump in the code: the version comes from the tag (`package.json` in the repository keeps the last release's
+version; the build stamps the release version into the copy it packs).
 
-If a run fails, fix the cause and start it again (re-run the workflow, or run it again on `main`): the draft left by the
-failed run is replaced. A published release is never changed, and a run refuses to publish if the tag meanwhile points
-at a different commit than the one it built.
+`.github/workflows/release.yml` runs the whole CI (`ci.yml`: tests, shellcheck, PSScriptAnalyzer, a real `install.sh`
+run and a silent install of the Windows installer), builds the archives with `scripts/build-release.sh dist <version>`,
+builds the Windows installer on a Windows runner from the Windows archive (and installs and uninstalls it once), and only
+then publishes the release. A manual run creates a draft on main's head and publishes it when everything is attached;
+if a run fails, fix the cause and run it again: a draft left by the failed run is replaced. A published release is never
+changed, and a run refuses to publish if the tag meanwhile points at a different commit than the one it built. For a
+release published by hand the files are uploaded to it and the download table is put in front of its notes.
+
+Files of a release `X.Y.Z`:
+
+| File | What |
+| --- | --- |
+| `foundry-release-proxy-X.Y.Z-linux.tar.gz` | Linux archive; one folder `foundry-release-proxy-X.Y.Z/` with `install.sh` at its top |
+| `foundry-release-proxy-X.Y.Z-windows.zip` | Windows archive (same folder) |
+| `foundry-release-proxy-X.Y.Z-setup.exe` | Windows setup wizard |
+| `foundry-release-proxy-linux.tar.gz`, `foundry-release-proxy-windows.zip`, `foundry-release-proxy-setup.exe` | the same three under fixed names, so `releases/latest/download/<name>` links never change |
+| `SHA256SUMS.txt` | `sha256sum` of every other file of the release |
+| `foundry-release-proxy-X.Y.Z.tar.gz`, `foundry-release-proxy-X.Y.Z.zip`, `FoundryReleaseProxy-Setup-X.Y.Z.exe`, `FoundryReleaseProxy-Setup.exe` (+ `.sha256`), `SHA256SUMS` | legacy names of 1.1.1 and older, byte-identical copies, so the updaters of installed 1.1.1 and older keep working |
+
+The legacy names are one marked block (`LEGACY_ASSETS`) in `scripts/build-release.sh`; it can go once every installation
+runs 1.2.0 or newer. From 1.2.0 on, the updaters use only the new names (`-linux.tar.gz` / `-windows.zip` and
+`SHA256SUMS.txt`); a newer release without them is reported as an error in the update log and nothing is installed.
 
 The release notes start with a download table per OS (`scripts/release-notes.sh`: links to this release's files, the
 always-latest links and the Linux install commands), followed by GitHub's list of merged pull requests.
 
-**Stable per-OS links.** Each release also carries its files under fixed names, so these links always give the newest
-release (you have to be signed in to GitHub with access to this private repository):
+**Stable per-OS links** (you have to be signed in to GitHub with access to this private repository):
 
 | OS | Link |
 | --- | --- |
-| Windows installer | `https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest/download/FoundryReleaseProxy-Setup.exe` |
+| Windows installer | `https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest/download/foundry-release-proxy-setup.exe` |
 | Windows archive | `https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest/download/foundry-release-proxy-windows.zip` |
 | Linux / Raspberry Pi | `https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest/download/foundry-release-proxy-linux.tar.gz` |
 
 On a machine without a browser: `gh release download --repo dxcufgb/FoundryVTT-Private-Github-proxy --pattern
-foundry-release-proxy-linux.tar.gz`. The auto-updater keeps using the versioned file names.
+foundry-release-proxy-linux.tar.gz`, or the one-liner above.
 
-Besides the archives, the workflow builds `FoundryReleaseProxy-Setup-<version>.exe` on a Windows runner
-(`packaging/windows/`: Inno Setup script, `build-installer.ps1`, and `smoke-test.ps1`, which installs and uninstalls the
-exe silently and checks that the proxy answers), and only publishes the release once that worked. The exe, its copy
-`FoundryReleaseProxy-Setup.exe` and their `.sha256` files are extra assets; the auto-updater keeps using the archives and `SHA256SUMS`.
-
-Build the same archives locally with `./scripts/build-release.sh dist` (needs `tar`, `zip`, `sha256sum`) and the Windows
-installer with `.\packaging\windows\build-installer.ps1` (needs Inno Setup 6.3+, e.g. `choco install innosetup`).
+Build the same files locally with `./scripts/build-release.sh dist 9.9.9` (needs `tar`, `zip`, `sha256sum`; check them
+with `cd dist && sha256sum -c SHA256SUMS.txt`) and the Windows installer with
+`.\packaging\windows\build-installer.ps1 -Version 9.9.9` (needs Inno Setup 6.3+, e.g. `choco install innosetup`); then
+`./scripts/build-release.sh --finish dist 9.9.9` adds the installer's copies and checksums.
 CI also runs `install.sh` on an Ubuntu runner and the Windows installer on a Windows runner for every push.
 
 ## Branch protection

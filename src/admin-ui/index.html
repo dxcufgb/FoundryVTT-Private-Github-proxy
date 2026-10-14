@@ -10,8 +10,26 @@
 </head>
 <body>
   <header>
-    <h1>Foundry Release Proxy <span class="sub">administration</span></h1>
-    <button type="button" id="logout" class="secondary" hidden>Log out</button>
+    <h1><a href="#/" id="home-link">Foundry Release Proxy <span class="sub">administration</span></a></h1>
+    <nav class="top-actions" id="top-actions" hidden aria-label="Settings and session">
+      <div class="menu-wrap">
+        <button type="button" id="settings-button" class="icon-button secondary" aria-haspopup="menu"
+          aria-expanded="false" aria-controls="settings-menu" aria-label="Settings" title="Settings">
+          <!-- gear icon: Feather Icons (MIT) -->
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+        <div id="settings-menu" class="menu" role="menu" aria-labelledby="settings-button" hidden>
+          <a role="menuitem" href="#/token">GitHub token</a>
+          <a role="menuitem" href="#/notifications">Notifications</a>
+          <a role="menuitem" href="#/password">Admin password</a>
+        </div>
+      </div>
+      <button type="button" id="logout" class="secondary">Log out</button>
+    </nav>
   </header>
 
   <div id="toast" role="status" aria-live="polite" hidden></div>
@@ -27,7 +45,7 @@
     </section>
 
     <div id="app-view" hidden>
-      <section class="card">
+      <section class="card page" data-page="modules">
         <div class="section-head">
           <h2>Modules</h2>
           <button type="button" id="add-module">Add module</button>
@@ -45,7 +63,8 @@
         <p id="no-modules" class="empty" hidden>No modules yet. Use <strong>Add module</strong> to add a repository.</p>
       </section>
 
-      <section class="card">
+      <section class="card page" data-page="token" hidden>
+        <p class="back"><a href="#/">← Modules</a></p>
         <h2>GitHub token</h2>
         <p class="hint">The proxy reads the module repositories (and, for automatic updates, its own repository) with this
           token. It is never shown here. Before it expires, create a new one on GitHub, paste it below and save it: it is
@@ -63,20 +82,8 @@
         <p id="daily-check" class="hint"></p>
       </section>
 
-      <section class="card">
-        <h2>Proxy version</h2>
-        <p class="hint">Installs the latest release of the proxy now instead of waiting for the daily automatic update
-          (or logging in to the machine). It runs the installer's own updater: only a newer, checksum-verified release
-          is installed, and a failed update puts the previous version back. The proxy restarts afterwards, so you log in
-          again. The notification e-mail says how it went.</p>
-        <p id="version-status"></p>
-        <div class="buttons">
-          <button type="button" id="update-check" class="secondary">Check for update</button>
-          <button type="button" id="update-now">Update proxy now</button>
-        </div>
-      </section>
-
-      <section class="card">
+      <section class="card page" data-page="notifications" hidden>
+        <p class="back"><a href="#/">← Modules</a></p>
         <h2>Notifications</h2>
         <p class="hint">E-mails go to every address below when the proxy updates itself (or an automatic update fails;
           automatic updates are turned on with the installer) and when its daily check finds a problem: a token GitHub
@@ -115,7 +122,8 @@
         </form>
       </section>
 
-      <section class="card narrow">
+      <section class="card narrow page" data-page="password" hidden>
+        <p class="back"><a href="#/">← Modules</a></p>
         <h2>Admin password</h2>
         <form id="password-form">
           <label>Current password <input type="password" name="current" autocomplete="current-password" required></label>
@@ -126,6 +134,18 @@
       </section>
     </div>
   </main>
+
+  <footer id="app-footer" hidden>
+    <div class="footer-text">
+      <p id="version-status"></p>
+      <p id="version-note" class="small" hidden></p>
+    </div>
+    <div class="buttons">
+      <button type="button" id="update-check" class="secondary small">Check for update</button>
+      <button type="button" id="update-now" class="small"
+        title="Installs the latest release now with the installer's own updater: only a newer, checksum-verified release; a failed update puts the previous version back">Update proxy now</button>
+    </div>
+  </footer>
 
   <dialog id="module-dialog">
     <form id="module-form" method="dialog">

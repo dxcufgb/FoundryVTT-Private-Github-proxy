@@ -14,7 +14,7 @@
     <nav class="top-actions" id="top-actions" hidden aria-label="Settings and session">
       <div class="menu-wrap">
         <button type="button" id="settings-button" class="icon-button secondary" aria-haspopup="menu"
-          aria-expanded="false" aria-controls="settings-menu" aria-label="Settings" title="Settings">
+          aria-expanded="false" aria-controls="settings-menu" aria-label="Menu: modules and settings" title="Modules and settings">
           <!-- gear icon: Feather Icons (MIT) -->
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
@@ -23,6 +23,8 @@
           </svg>
         </button>
         <div id="settings-menu" class="menu" role="menu" aria-labelledby="settings-button" hidden>
+          <a role="menuitem" href="#/">Modules</a>
+          <div class="menu-sep" role="separator"></div>
           <a role="menuitem" href="#/token">GitHub token</a>
           <a role="menuitem" href="#/notifications">Notifications</a>
           <a role="menuitem" href="#/password">Admin password</a>
@@ -51,11 +53,12 @@
           <button type="button" id="add-module">Add module</button>
         </div>
         <p class="hint">Each module is a private GitHub repository the proxy serves. Give Foundry the module's link
-          (<em>Manifest URL</em> in <em>Install Module</em>); <strong>Copy link</strong> puts it on the clipboard.</p>
+          (<em>Manifest URL</em> in <em>Install Module</em>); <strong>Copy link</strong> in the module's <strong>⋯</strong>
+          menu puts it on the clipboard.</p>
         <div class="table-wrap">
           <table id="modules">
             <thead>
-              <tr><th>Module id</th><th>Repository</th><th>Release assets</th><th>Link for Foundry</th><th class="actions-col">Actions</th></tr>
+              <tr><th>Module id</th><th>Repository</th><th>Release assets</th><th>Link for Foundry</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -67,17 +70,19 @@
         <p class="back"><a href="#/">← Modules</a></p>
         <h2>GitHub token</h2>
         <p class="hint">The proxy reads the module repositories (and, for automatic updates, its own repository) with this
-          token. It is never shown here. Before it expires, create a new one on GitHub, paste it below and save it: it is
-          used at once. <strong>Test setup</strong> checks the token and every repository; with a token in the field it
-          tests that one without saving it.</p>
+          token. It is never shown here. Before it expires, create a new one on GitHub and add it here: GitHub must accept
+          it first, then it is used at once. <strong>Test setup</strong> checks the token and every repository.</p>
         <p id="token-status"></p>
-        <form id="token-form">
-          <label>New token <input type="password" name="token" autocomplete="off" spellcheck="false" placeholder="github_pat_…"></label>
-          <div class="buttons">
-            <button type="submit" id="token-save">Save token</button>
-            <button type="button" id="setup-test" class="secondary">Test setup</button>
-          </div>
+        <p id="token-note" class="hint"></p>
+        <!-- no token yet: the field right here; with one, "Add new token" opens #token-dialog -->
+        <form id="token-form" hidden>
+          <label>Token <input type="password" name="token" autocomplete="off" spellcheck="false" placeholder="github_pat_…"></label>
         </form>
+        <div class="buttons">
+          <button type="submit" id="token-save" form="token-form" hidden>Save token</button>
+          <button type="button" id="token-add" hidden>Add new token</button>
+          <button type="button" id="setup-test" class="secondary">Test setup</button>
+        </div>
         <ul id="setup-results" class="results" hidden></ul>
         <p id="daily-check" class="hint"></p>
       </section>
@@ -122,7 +127,7 @@
         </form>
       </section>
 
-      <section class="card narrow page" data-page="password" hidden>
+      <section class="card narrow centered page" data-page="password" hidden>
         <p class="back"><a href="#/">← Modules</a></p>
         <h2>Admin password</h2>
         <form id="password-form">
@@ -142,10 +147,36 @@
     </div>
     <div class="buttons">
       <button type="button" id="update-check" class="secondary small">Check for update</button>
-      <button type="button" id="update-now" class="small"
-        title="Installs the latest release now with the installer's own updater: only a newer, checksum-verified release; a failed update puts the previous version back">Update proxy now</button>
     </div>
   </footer>
+
+  <dialog id="token-dialog" aria-labelledby="token-dialog-title">
+    <form id="token-dialog-form">
+      <h2 id="token-dialog-title">Add new token</h2>
+      <p class="hint">It replaces the token in use as soon as GitHub accepts it; the old one stays valid on GitHub until
+        you delete it there.</p>
+      <label>New token <input type="password" name="token" required autocomplete="off" spellcheck="false" placeholder="github_pat_…"></label>
+      <p class="error" id="token-dialog-error" hidden></p>
+      <div class="buttons">
+        <button type="submit" id="token-dialog-add">Add</button>
+        <button type="button" class="secondary" id="token-dialog-cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="update-dialog" aria-labelledby="update-dialog-title">
+    <form method="dialog">
+      <h2 id="update-dialog-title">Update available</h2>
+      <p id="update-dialog-text"></p>
+      <p class="hint">The installer's own updater installs it: only a newer, checksum-verified release, and a failed
+        update puts the previous version back. The proxy restarts, so Foundry cannot reach it for a few seconds and you
+        log in again. The notification e-mail says how it went.</p>
+      <div class="buttons">
+        <button type="submit" value="update">Update now</button>
+        <button type="submit" value="cancel" class="secondary">Not now</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="module-dialog">
     <form id="module-form" method="dialog">

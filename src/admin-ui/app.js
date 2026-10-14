@@ -84,35 +84,72 @@
   function showPage() {
     const page = currentPage();
     for (const section of document.querySelectorAll('.page')) section.hidden = section.dataset.page !== page;
+    const here = page === 'modules' ? '#/' : `#/${page}`;
     for (const item of document.querySelectorAll('#settings-menu a')) {
-      if (item.getAttribute('href') === `#/${page}`) item.setAttribute('aria-current', 'page');
+      if (item.getAttribute('href') === here) item.setAttribute('aria-current', 'page');
       else item.removeAttribute('aria-current');
     }
     document.title = page === 'modules' ? 'Foundry Release Proxy' : `${PAGES[page]} – Foundry Release Proxy`;
     closeMenu();
   }
 
-  // Settings menu (the cogwheel): opens below the button, closes on Escape, a click outside or a choice.
-  function menuItems() {
-    return [...document.querySelectorAll('#settings-menu [role="menuitem"]')];
+  // Drop-down menus: the cogwheel's settings menu and each module's "⋯" actions menu. A menu is a button and a
+  // [role=menu] in a .menu-wrap; one is open at a time and Escape, a click outside or a choice closes it. Module
+  // menus are .floating: fixed to the button's position, so the scrolling table cannot cut them off.
+  let current = null; // { button, menu } of the open menu
+
+  const menuItems = (menu) => [...menu.querySelectorAll('[role="menuitem"]')];
+
+  function placeFloating(button, menu) {
+    const r = button.getBoundingClientRect();
+    const height = menu.offsetHeight;
+    const below = r.bottom + 6 + height <= window.innerHeight - 8;
+    menu.style.top = `${Math.max(8, below ? r.bottom + 6 : r.top - 6 - height)}px`;
+    menu.style.left = `${Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))}px`;
   }
 
-  function openMenu(focusIndex = 0) {
-    $('#settings-menu').hidden = false;
-    $('#settings-button').setAttribute('aria-expanded', 'true');
-    const items = menuItems();
-    if (items[focusIndex]) items[focusIndex].focus();
+  function openMenu(button, menu, focusIndex = 0) {
+    closeMenu();
+    menu.hidden = false;
+    if (menu.classList.contains('floating')) placeFloating(button, menu);
+    button.setAttribute('aria-expanded', 'true');
+    current = { button, menu };
+    const items = menuItems(menu);
+    if (items[focusIndex]) items[focusIndex].focus({ preventScroll: true });
   }
 
   function closeMenu(returnFocus = false) {
-    if ($('#settings-menu').hidden) return;
-    $('#settings-menu').hidden = true;
-    $('#settings-button').setAttribute('aria-expanded', 'false');
-    if (returnFocus) $('#settings-button').focus();
+    if (!current) return;
+    const { button, menu } = current;
+    current = null;
+    menu.hidden = true;
+    button.setAttribute('aria-expanded', 'false');
+    if (returnFocus) button.focus();
+  }
+
+  // Click and arrow keys on the button open its menu; a choice in the menu closes it and puts focus back on the
+  // button. That happens before the choice's own action runs (capture phase), so a dialog the action opens hands
+  // focus back to the button when it closes, and keyboard users carry on from the same row.
+  function wireMenu(button, menu) {
+    button.addEventListener('click', () => {
+      if (current && current.menu === menu) closeMenu();
+      else openMenu(button, menu);
+    });
+    button.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        openMenu(button, menu, e.key === 'ArrowDown' ? 0 : menuItems(menu).length - 1);
+      }
+    });
+    menu.addEventListener('keydown', menuKeys);
+    menu.addEventListener('click', (e) => {
+      if (e.target.closest('[role="menuitem"]')) closeMenu(true);
+    }, true);
   }
 
   function menuKeys(e) {
-    const items = menuItems();
+    if (!current) return;
+    const items = menuItems(current.menu);
     const i = items.indexOf(document.activeElement);
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -178,7 +215,7 @@
         notes.push(`Latest release unknown: ${update.latestProblem}.`);
       }
       if (update.problem) {
-        notes.push(`"Update proxy now" is not available: ${update.problem}`);
+        notes.push(`Updating from this page is not available: ${update.problem}`);
         bad = true;
       }
     }
@@ -189,20 +226,33 @@
     noteEl.textContent = notes.join(' ');
     noteEl.hidden = notes.length === 0;
     noteEl.className = bad ? 'small error' : 'small';
-    $('#update-now').disabled = Boolean(watching) || !update || !update.canUpdate;
+    $('#update-check').disabled = Boolean(watching);
   }
 
+  // "Check for update": asks GitHub for the latest release. Pressed by hand (e) and a newer one exists, it asks
+  // whether to install it now; the check after login only updates the footer.
   async function checkUpdate(e) {
     const button = $('#update-check');
     button.disabled = true;
     try {
       update = await call('GET', 'update');
       renderVersion();
-      if (e) toast(update.newer ? `Version ${update.latest} is available.` : 'Checked for updates.');
+      if (!e) return;
+      if (update.newer && update.canUpdate) {
+        $('#update-dialog-text').textContent =
+          `Version ${update.latest} is available; this proxy runs ${state.version || 'an unknown version'}. Update the proxy now?`;
+        $('#update-dialog').showModal();
+      } else if (update.newer) {
+        toast(`Version ${update.latest} is available, but updating from this page is not set up: ${update.problem}`, true);
+      } else if (update.newer === false) {
+        toast(`The proxy is up to date (${state.version}).`);
+      } else {
+        toast(update.latestProblem ? `Latest release unknown: ${update.latestProblem}` : 'Checked for updates.', Boolean(update.latestProblem));
+      }
     } catch (err) {
       if (e) toast(err.message, true);
     } finally {
-      button.disabled = false;
+      button.disabled = Boolean(watching);
     }
   }
 
@@ -239,11 +289,9 @@
     }, 5000);
   }
 
-  async function updateNow(e) {
-    const what = update && update.newer ? `version ${update.latest}` : 'the latest release (if it is newer)';
-    if (!confirm(`Install ${what} now?\nThe proxy restarts; Foundry cannot reach it for a few seconds and you log in again.`)) return;
-    const button = e.currentTarget;
-    button.disabled = true;
+  // The update dialog's "Update now": asks the installer's updater to run, then waits for the restart.
+  async function updateNow() {
+    $('#update-check').disabled = true;
     try {
       await call('POST', 'update', {});
       watchUpdate(state.version);
@@ -255,14 +303,28 @@
     }
   }
 
+  // With a token in use: a checkmark, its kind and "Add new token" (a dialog); without one: the field on the page.
   function renderToken() {
     const t = state.token;
+    const hasToken = Boolean(t.kind);
     const status = $('#token-status');
-    status.className = t.canChange ? '' : 'error';
-    status.textContent = t.canChange
-      ? `In use: a ${t.kind}. A new one is saved to ${t.file}.`
-      : `In use: a ${t.kind || 'GitHub token'}. It cannot be changed here: ${t.file ? `${t.file}: ` : ''}${t.problem}`;
+    status.replaceChildren();
+    if (hasToken) {
+      status.append(el('span', { class: 'check-ok', 'aria-hidden': 'true', text: '✓' }),
+        el('strong', { text: 'A token is set' }), ` (${t.kind}).`);
+    } else {
+      status.textContent = 'No token is set.';
+    }
+    const note = $('#token-note');
+    note.className = t.canChange ? 'hint' : 'hint error';
+    note.textContent = t.canChange
+      ? `A new token is saved to ${t.file}.`
+      : `It cannot be changed here: ${t.file ? `${t.file}: ` : ''}${t.problem}`;
+    $('#token-form').hidden = hasToken;
+    $('#token-save').hidden = hasToken;
+    $('#token-add').hidden = !hasToken;
     $('#token-save').disabled = !t.canChange;
+    $('#token-add').disabled = !t.canChange;
     const daily = $('#daily-check');
     const c = t.lastCheck;
     daily.className = c && c.problems.length ? 'hint error' : 'hint';
@@ -299,7 +361,9 @@
     list.replaceChildren(el('li', { text: 'Testing…' }));
     list.hidden = false;
     try {
-      const r = await call('POST', 'setup-test', { token: $('#token-form').token.value.trim() });
+      // without a saved token, a token typed in the page's field is tested (not saved)
+      const typed = $('#token-form').hidden ? '' : $('#token-form').token.value.trim();
+      const r = await call('POST', 'setup-test', { token: typed });
       showResults(r);
       const bad = r.token.status === 'bad' || r.checks.some((c) => c.status === 'bad');
       toast(bad ? 'Test setup found problems (see the list).' : 'Test setup finished.', bad);
@@ -311,43 +375,76 @@
     }
   }
 
-  async function saveToken(e) {
-    e.preventDefault();
-    const form = e.currentTarget;
-    const button = $('#token-save');
-    button.disabled = true;
+  // Saves a token (GitHub must accept it first); true when it is in use. onError gets the reason otherwise.
+  async function saveToken(token, onError) {
     try {
-      render(await call('PUT', 'token', { token: form.token.value.trim() }));
-      form.reset();
+      render(await call('PUT', 'token', { token }));
       toast('Token saved and in use. Delete the old one on GitHub when you no longer need it.');
+      return true;
     } catch (err) {
-      toast(err.message, true);
-    } finally {
-      button.disabled = !state.token.canChange;
+      onError(err.message);
+      return false;
     }
   }
 
+  async function saveTypedToken(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    $('#token-save').disabled = true;
+    if (await saveToken(form.token.value.trim(), (msg) => toast(msg, true))) form.reset();
+    $('#token-save').disabled = !state.token.canChange;
+  }
+
+  function openTokenDialog() {
+    $('#token-dialog-form').reset();
+    $('#token-dialog-error').hidden = true;
+    $('#token-dialog').showModal();
+    $('#token-dialog-form').token.focus();
+  }
+
+  async function addToken(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const button = $('#token-dialog-add');
+    const error = $('#token-dialog-error');
+    error.hidden = true;
+    button.disabled = true;
+    const ok = await saveToken(form.token.value.trim(), (msg) => {
+      error.textContent = msg;
+      error.hidden = false;
+    });
+    button.disabled = false;
+    if (ok) $('#token-dialog').close();
+  }
+
   function renderModules() {
+    closeMenu();
     const body = $('#modules tbody');
     body.replaceChildren();
-    for (const m of state.modules) {
+    state.modules.forEach((m, index) => {
       const status = el('span', { class: 'status' });
       const assets = [m.manifestAsset, m.zipAsset].join(', ');
-      const row = el('tr', {}, [
+      const menuId = `module-menu-${index}`;
+      const item = (text, onclick, cls = '') => el('button', { type: 'button', role: 'menuitem', class: cls, text, onclick });
+      const menu = el('div', { id: menuId, class: 'menu floating', role: 'menu', 'aria-label': `Actions for ${m.id}`, hidden: '' }, [
+        item('Copy link', () => copyLink(m)),
+        item('Check release', () => checkRelease(m, status)),
+        item('Edit', () => openModule(m)),
+        item('Delete', () => deleteModule(m), 'danger'),
+      ]);
+      const button = el('button', {
+        type: 'button', class: 'icon-button secondary small', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+        'aria-controls': menuId, 'aria-label': `Actions for ${m.id}`, title: 'Actions', text: '⋯',
+      });
+      wireMenu(button, menu);
+      body.append(el('tr', {}, [
         el('td', {}, [el('strong', { text: m.id })]),
         el('td', {}, [el('code', { text: m.repo }), status]),
         el('td', {}, [el('code', { text: assets })]),
         el('td', {}, [el('code', { text: m.link })]),
-        el('td', {}, [el('div', { class: 'actions' }, [
-          el('button', { type: 'button', class: 'small', text: 'Copy link', onclick: () => copyLink(m) }),
-          el('button', { type: 'button', class: 'small secondary', text: 'Check release',
-            onclick: (e) => checkRelease(m, status, e.currentTarget) }),
-          el('button', { type: 'button', class: 'small secondary', text: 'Edit', onclick: () => openModule(m) }),
-          el('button', { type: 'button', class: 'small danger', text: 'Delete', onclick: () => deleteModule(m) }),
-        ])]),
-      ]);
-      body.append(row);
-    }
+        el('td', { class: 'actions-col' }, [el('div', { class: 'menu-wrap' }, [button, menu])]),
+      ]));
+    });
     $('#modules').hidden = state.modules.length === 0;
     $('#no-modules').hidden = state.modules.length !== 0;
   }
@@ -361,8 +458,7 @@
     }
   }
 
-  async function checkRelease(m, status, button) {
-    button.disabled = true;
+  async function checkRelease(m, status) {
     status.className = 'status';
     status.textContent = 'Checking…';
     try {
@@ -381,8 +477,6 @@
     } catch (err) {
       status.className = 'status bad';
       status.textContent = err.message;
-    } finally {
-      button.disabled = false;
     }
   }
 
@@ -553,21 +647,16 @@
   document.addEventListener('DOMContentLoaded', async () => {
     $('#login-form').addEventListener('submit', login);
     $('#logout').addEventListener('click', logout);
-    $('#settings-button').addEventListener('click', () => {
-      if ($('#settings-menu').hidden) openMenu();
-      else closeMenu();
-    });
-    $('#settings-button').addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        openMenu(e.key === 'ArrowDown' ? 0 : menuItems().length - 1);
-      }
-    });
-    $('#settings-menu').addEventListener('keydown', menuKeys);
-    $('#settings-menu').addEventListener('click', () => closeMenu());
+    wireMenu($('#settings-button'), $('#settings-menu'));
     document.addEventListener('click', (e) => {
       if (!e.target.closest('.menu-wrap')) closeMenu();
     });
+    // A module's menu is fixed to its button's place on screen: scrolling or resizing closes it.
+    const closeFloating = () => {
+      if (current && current.menu.classList.contains('floating')) closeMenu();
+    };
+    window.addEventListener('resize', closeFloating);
+    document.addEventListener('scroll', closeFloating, true);
     window.addEventListener('hashchange', () => {
       if (!$('#app-view').hidden) {
         showPage();
@@ -577,9 +666,17 @@
     $('#add-module').addEventListener('click', () => openModule(null));
     $('#module-form').addEventListener('submit', saveModule);
     $('#module-cancel').addEventListener('click', () => $('#module-dialog').close());
-    $('#token-form').addEventListener('submit', saveToken);
+    $('#token-form').addEventListener('submit', saveTypedToken);
+    $('#token-add').addEventListener('click', openTokenDialog);
+    $('#token-dialog-form').addEventListener('submit', addToken);
+    $('#token-dialog-cancel').addEventListener('click', () => $('#token-dialog').close());
+    // the typed token never stays in the page once the dialog is closed
+    $('#token-dialog').addEventListener('close', () => $('#token-dialog-form').reset());
     $('#update-check').addEventListener('click', checkUpdate);
-    $('#update-now').addEventListener('click', updateNow);
+    $('#update-dialog').addEventListener('close', () => {
+      if ($('#update-dialog').returnValue === 'update') updateNow();
+      $('#update-dialog').returnValue = '';
+    });
     $('#setup-test').addEventListener('click', testSetup);
     $('#notify-form').addEventListener('submit', saveNotify);
     $('#notify-test').addEventListener('click', testNotify);

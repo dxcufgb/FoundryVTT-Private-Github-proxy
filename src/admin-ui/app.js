@@ -127,7 +127,9 @@
     if (returnFocus) button.focus();
   }
 
-  // Click and arrow keys on the button open its menu; a choice in the menu closes it.
+  // Click and arrow keys on the button open its menu; a choice in the menu closes it and puts focus back on the
+  // button. That happens before the choice's own action runs (capture phase), so a dialog the action opens hands
+  // focus back to the button when it closes, and keyboard users carry on from the same row.
   function wireMenu(button, menu) {
     button.addEventListener('click', () => {
       if (current && current.menu === menu) closeMenu();
@@ -141,8 +143,8 @@
     });
     menu.addEventListener('keydown', menuKeys);
     menu.addEventListener('click', (e) => {
-      if (e.target.closest('[role="menuitem"]')) closeMenu();
-    });
+      if (e.target.closest('[role="menuitem"]')) closeMenu(true);
+    }, true);
   }
 
   function menuKeys(e) {

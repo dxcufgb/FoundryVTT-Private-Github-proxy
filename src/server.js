@@ -285,7 +285,11 @@ function createApp({
       await res.body?.cancel?.();
     }
     if (res.status === 401) return { status: 'bad', message: 'GitHub rejects the token (expired, revoked or mistyped)' };
-    if (!res.ok && res.status !== 403) return { status: 'bad', message: `GitHub answered HTTP ${res.status}` };
+    // 403: a rate limit, or a token that may not read its own account; either way GitHub did not confirm it.
+    if (res.status === 403) {
+      return { status: 'bad', message: 'GitHub did not confirm the token (HTTP 403: rate limit, or a token type that cannot read its account); try again later or use a personal access token' };
+    }
+    if (!res.ok) return { status: 'bad', message: `GitHub answered HTTP ${res.status}` };
     const days = expires ? (Date.parse(expires) - Date.now()) / 86400000 : NaN;
     const owner = login ? ` (${login})` : '';
     if (days < 0) return { status: 'bad', login, expires, message: `the token expired on ${expires}` };

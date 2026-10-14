@@ -525,12 +525,13 @@ test('env files are parsed without shell expansion', () => {
 
 // A fake GitHub for the token and setup tests. Every Authorization header it sees is recorded in `seen`; `tokens` maps
 // a token to its owner's login (unknown tokens get 401); `expires` is the expiry header GitHub would send.
-function fakeGithub({ tokens = { [TOKEN]: 'octo' }, expires = '2099-01-01 00:00:00 UTC', repos = {}, down = false } = {}) {
+function fakeGithub({ tokens = { [TOKEN]: 'octo' }, expires = '2099-01-01 00:00:00 UTC', repos = {}, down = false, userStatus } = {}) {
   const seen = [];
   const fetchImpl = async (url, init = {}) => {
     const auth = (init.headers && init.headers.Authorization) || '';
     seen.push({ url, auth });
     if (down) throw new TypeError('fetch failed');
+    if (url === `${API}/user` && userStatus) return new Response('{"message":"API rate limit exceeded"}', { status: userStatus });
     const tok = auth.replace(/^Bearer /, '');
     if (!Object.hasOwn(tokens, tok)) return new Response('{"message":"Bad credentials"}', { status: 401 });
     if (url === `${API}/user`) {
@@ -673,6 +674,7 @@ test('Test setup warns about a token that expires soon and reports an expired or
     [{ expires: past }, 'bad', /expired on 2020-01-01/],
     [{ expires: null }, 'ok', /no expiry date/],
     [{ down: true }, 'bad', /could not reach GitHub/],
+    [{ userStatus: 403 }, 'bad', /did not confirm the token \(HTTP 403/],
   ]) {
     const gh = fakeGithub({ repos: { 'o/alpha': { assets: BOTH } }, ...opts });
     const s = await start({ fetchImpl: gh.fetchImpl });
@@ -681,6 +683,12 @@ test('Test setup warns about a token that expires soon and reports an expired or
       const res = await s.call('POST', 'setup-test', {});
       assert.equal(res.data.token.status, status);
       assert.match(res.data.token.message, message);
+      // a token GitHub did not confirm is never saved
+      if (status === 'bad') {
+        const put = await s.call('PUT', 'token', { token: NEW_TOKEN });
+        assert.equal(put.status, 400);
+        assert.ok(fs.readFileSync(s.envFile, 'utf8').includes(`GITHUB_TOKEN=${TOKEN}`));
+      }
     } finally {
       await s.close();
     }

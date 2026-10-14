@@ -251,7 +251,7 @@ the proxy's redirect. Updates then appear like any other module's: Foundry re-fe
 ## Adding another private module
 
 The easy way is the [administration page](#administration-page): **Add module**, enter the module id and `owner/name`,
-then **Copy link** and paste it into Foundry (steps 2 and 3 below still apply). By hand:
+then **Copy link** (in the module's **⋯** menu) and paste it into Foundry (steps 2 and 3 below still apply). By hand:
 
 1. Add an entry to `/etc/foundry-release-proxy/config.json`:
    ```json
@@ -276,29 +276,32 @@ installers ask for one on a first install (Enter = keep it off). Set or change i
 `sudo ./install.sh --set-admin-password` (Windows: `.\scripts\install-service.ps1 -SetAdminPassword`) or on the page
 itself. Non-interactive installs take it from `FOUNDRY_PROXY_ADMIN_PASSWORD` (never from the command line).
 
-Layout: the main page lists the modules. The **cogwheel** next to **Log out** opens a menu with the settings pages
-(**GitHub token**, **Notifications**, **Admin password**); each has its own address (`/_admin/#/token`,
-`#/notifications`, `#/password`), so the browser's back button and bookmarks work. The footer at the bottom of every
-page shows the installed version, whether a newer release exists, and **Check for update** / **Update proxy now**.
+Layout: the main page lists the modules. The **cogwheel** next to **Log out** opens a menu with **Modules** and the
+settings pages (**GitHub token**, **Notifications**, **Admin password**), the current page highlighted; each has its own
+address (`/_admin/#/`, `#/token`, `#/notifications`, `#/password`), so the browser's back button and bookmarks work. The footer at the bottom of every
+page shows the installed version, whether a newer release exists, and **Check for update**, which offers to update the
+proxy when there is a newer release.
 
 What it does:
 
-- **Modules** (main page): lists every module with its repository, release asset names and the link for Foundry. **Add module**,
-  **Edit** (the id can be renamed: its link changes), **Delete**, **Check release** (shows the latest release tag, or
+- **Modules** (main page): lists every module with its repository, release asset names and the link for Foundry.
+  **Add module** above the list; each module's **⋯** menu holds **Edit** (the id can be renamed: its link changes),
+  **Delete**, **Check release** (shows the latest release tag, or
   why there is none: no release, or the token cannot see the repository) and **Copy link** (the manifest URL to paste
   into Foundry's *Install Module*). Changes are checked with the same rules as `config.json`, written to it and used
   at once, without a restart. Remember to add a new repository to the token's repository access as well.
-- **GitHub token** (settings menu): what kind of token is in use (never the token itself), a field for a new one, **Save token** and
-  **Test setup**. Saving first asks GitHub whether it accepts the token (a mistyped or revoked one is refused and
+- **GitHub token** (settings menu): a checkmark and the kind of token in use (never the token itself), **Add new token**
+  (a dialog with the field, **Add** and **Cancel**) and **Test setup**; without any token, the field is on the page
+  itself. Adding first asks GitHub whether it accepts the token (a mistyped or revoked one is refused and
   nothing changes), then rewrites the `GITHUB_TOKEN` line of `env` in place and switches the proxy over without a
   restart; automatic updates that use the proxy's token pick it up from there too. **Test setup** checks the token
   (whose it is, when it expires) and then every repository: this proxy's own repository (needed for automatic updates
   unless they have their own updater token) and each module's (can the token see it, is there a published release,
-  does it have the manifest and zip assets). With a token in the field it tests that one without saving it. The line
-  below shows the result of the last [daily check](#daily-check).
+  does it have the manifest and zip assets). The line below shows the result of the last [daily check](#daily-check).
 - **Version and update** (footer): the installed version and the latest release (when the proxy's token can see this
-  repository), **Check for update** and **Update proxy now**, which installs the latest release right away instead of waiting for
-  the daily [automatic update](#automatic-updates) or logging in to the machine. See [Update proxy now](#update-proxy-now).
+  repository) and **Check for update**. When a newer release exists, it asks whether to update the proxy now (**Update
+  now** / **Not now**); **Update now** installs it right away instead of waiting for the daily
+  [automatic update](#automatic-updates) or logging in to the machine. See [Update proxy now](#update-proxy-now).
 - **Notifications** (settings menu): the e-mail addresses that hear about automatic updates and daily-check problems (see below), the
   SMTP server that sends them, and **Send test e-mail**. The SMTP password is never shown again; leave the field empty
   to keep it.
@@ -478,7 +481,7 @@ SYSTEM daily at 03:00 plus up to 6 hours of random delay.
 | turn on later | `sudo ./install.sh --enable-auto-update` | `.\scripts\install-service.ps1 -EnableAutoUpdate` |
 | turn off | `sudo ./install.sh --disable-auto-update` | `.\scripts\install-service.ps1 -DisableAutoUpdate` |
 | check only (exit 0 = current, 10 = update available) | `sudo ./install.sh --check-update` | `.\scripts\install-service.ps1 -Check` |
-| update now | `sudo ./install.sh --update-now`, or [**Update proxy now**](#update-proxy-now) on the admin page | `.\scripts\install-service.ps1 -UpdateNow`, or the admin page |
+| update now | `sudo ./install.sh --update-now`, or **Check for update** → **Update now** on the [admin page](#update-proxy-now) | `.\scripts\install-service.ps1 -UpdateNow`, or the admin page |
 | log | `journalctl -u foundry-release-proxy-update` | `C:\ProgramData\FoundryReleaseProxy\auto-update.log` |
 
 On Linux `sudo ./scripts/install-service.sh` takes the same options (`--check` is the older name of `--check-update`).
@@ -527,11 +530,12 @@ downtime). The previous version stays in the `.prev` folder until the next updat
 
 ### Update proxy now
 
-**Update proxy now** on the admin page runs the same update as the daily automatic update, at once, whether or not
+**Check for update** in the admin page's footer asks GitHub for the latest release; when it is newer, a dialog asks
+whether to update the proxy now. **Update now** runs the same update as the daily automatic update, at once, whether or not
 automatic updates are turned on: same token (`TOKEN_FILE` in `auto-update.conf`, else the proxy's `env`), same checks
 (only a strictly newer, checksum-verified release; rollback on failure), same log and the same notification e-mail.
 The proxy restarts when a newer version was installed, which ends every admin login; the page waits for that and
-asks you to log in again. The button can be pressed again after two minutes.
+asks you to log in again. An update can be requested again after two minutes.
 
 The proxy itself never runs the update (it has no rights to): it only asks the root (Linux) or SYSTEM (Windows)
 updater the installer set up to run now, and nothing it sends can change what that updater does.

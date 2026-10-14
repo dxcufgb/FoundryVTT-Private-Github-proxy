@@ -6,6 +6,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const { createApp, parseConfig, ConfigError } = require('../src/server.js');
+const { makeZip, readZip } = require('./zipfixture.js');
 
 const BASE = 'http://localhost:8787';
 const API = 'https://api.github.com';
@@ -34,13 +35,14 @@ function mockFetch(routes) {
 const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status });
 const redirect = (location) => new Response(null, { status: 302, headers: { location } });
 
-async function start(modules, fetchImpl) {
+async function start(modules, fetchImpl, { patchZips, log = () => {} } = {}) {
   const server = createApp({
     modules: parseConfig(JSON.stringify(modules)),
     token: TOKEN,
     publicBaseUrl: BASE,
     fetchImpl,
-    log: () => {},
+    log,
+    patchZips,
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const url = `http://127.0.0.1:${server.address().port}`;
@@ -92,13 +94,13 @@ test('tagged manifest uses the tag lookup and is rewritten the same way', async 
   }
 });
 
-test('zip answers 302 to the pre-signed URL and never downloads it itself', async () => {
+test('with PATCH_ZIPS off the zip is a 302 to the pre-signed URL and never downloaded', async () => {
   const rel = release('o/transformations', 'v1.2.0');
   const f = mockFetch({
     [`${API}/repos/o/transformations/releases/tags/v1.2.0`]: () => json(rel),
     [rel.assets[1].url]: () => redirect('https://objects.example/signed-zip'),
   });
-  const s = await start(one, f);
+  const s = await start(one, f, { patchZips: false });
   try {
     for (const method of ['GET', 'HEAD']) {
       const res = await fetch(`${s.url}/transformations/v1.2.0/module.zip`, { method, redirect: 'manual' });
@@ -264,4 +266,151 @@ test('the process refuses to start with a malformed config', () => {
   fs.rmSync(dir, { recursive: true });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /refusing to start.*owner\/name/);
+});
+
+// A pre-signed zip download that answers Range requests (206), like GitHub's storage. range: false ignores them;
+// cutAfter: stops the body after that many bytes.
+function signedZip(buf, { range = true, cutAfter } = {}) {
+  return (init) => {
+    const m = /^bytes=(\d+)-(\d+)$/.exec((init.headers && init.headers.Range) || '');
+    if (!range || !m) return new Response(buf);
+    const a = Number(m[1]);
+    const b = Math.min(Number(m[2]), buf.length - 1);
+    let body = buf.subarray(a, b + 1);
+    if (cutAfter !== undefined) {
+      const part = body.subarray(0, cutAfter);
+      body = new ReadableStream({ start(c) { c.enqueue(part); c.error(new Error('connection reset')); } });
+    }
+    return new Response(body, { status: 206, headers: { 'content-range': `bytes ${a}-${b}/${buf.length}` } });
+  };
+}
+
+function zipRelease(buf) {
+  const rel = release('o/transformations', 'v1.2.0');
+  rel.assets[1].size = buf.length;
+  return rel;
+}
+
+const releaseZip = () => makeZip([
+  { name: 'scripts/main.js', data: 'console.log("x");\n'.repeat(500) },
+  { name: 'module.json', data: JSON.stringify({ id: 'transformations', version: '1.2.0',
+    manifest: 'https://github.com/o/transformations/releases/latest/download/module.json',
+    download: 'https://github.com/o/transformations/releases/latest/download/module.zip' }) },
+  { name: 'packs/items.db', data: Buffer.alloc(4000, 7), method: 0 },
+]);
+
+test('the zip is streamed with its module.json pointing at the proxy (Foundry updates through it)', async () => {
+  const buf = releaseZip();
+  const rel = zipRelease(buf);
+  const lines = [];
+  const f = mockFetch({
+    [`${API}/repos/o/transformations/releases/tags/v1.2.0`]: () => json(rel),
+    [rel.assets[1].url]: () => redirect('https://objects.example/signed-zip'),
+    'https://objects.example/signed-zip': signedZip(buf),
+  });
+  const s = await start(one, f, { log: (l) => lines.push(l) });
+  try {
+    const res = await fetch(`${s.url}/transformations/v1.2.0/module.zip`, { redirect: 'manual' });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'application/zip');
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    const out = Buffer.from(await res.arrayBuffer());
+    assert.equal(Number(res.headers.get('content-length')), out.length);
+    const files = readZip(out);
+    const before = readZip(buf);
+    assert.deepEqual(Object.keys(files).sort(), Object.keys(before).sort());
+    assert.deepEqual(files['scripts/main.js'], before['scripts/main.js']);
+    assert.deepEqual(files['packs/items.db'], before['packs/items.db']);
+    const m = JSON.parse(files['module.json']);
+    assert.equal(m.manifest, `${BASE}/transformations/module.json`);
+    assert.equal(m.download, `${BASE}/transformations/v1.2.0/module.zip`);
+    assert.equal(m.version, '1.2.0');
+    // the pre-signed URL never sees the token; every request to it is a partial one
+    const signed = f.calls.filter((c) => c.url.startsWith('https://objects.example'));
+    assert.ok(signed.length >= 2);
+    assert.ok(signed.every((c) => !c.init.headers.Authorization && /^bytes=\d+-\d+$/.test(c.init.headers.Range)));
+    assert.ok(lines.some((l) => /served with its module.json pointing at the proxy/.test(l)));
+    assert.ok(lines.every((l) => !l.includes(TOKEN)));
+
+    // HEAD: the same headers, and one request fewer to the download (its body is not streamed)
+    f.calls.length = 0;
+    const head = await fetch(`${s.url}/transformations/v1.2.0/module.zip`, { method: 'HEAD' });
+    assert.equal(head.status, 200);
+    assert.equal(Number(head.headers.get('content-length')), out.length);
+    assert.equal(f.calls.filter((c) => c.url.startsWith('https://objects.example')).length, signed.length - 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test('the zip falls back to the redirect when it cannot be patched', async () => {
+  const buf = releaseZip();
+  for (const [name, setup] of [
+    ['no partial downloads', (rel) => ({ 'https://objects.example/signed-zip': signedZip(buf, { range: false }) })],
+    ['no size in the release', (rel) => { delete rel.assets[1].size; return {}; }],
+    ['not a zip', (rel) => ({ 'https://objects.example/signed-zip': signedZip(Buffer.alloc(buf.length, 1)) })],
+  ]) {
+    const rel = zipRelease(buf);
+    const lines = [];
+    const f = mockFetch({
+      [`${API}/repos/o/transformations/releases/tags/v1.2.0`]: () => json(rel),
+      [rel.assets[1].url]: () => redirect('https://objects.example/signed-zip'),
+      ...setup(rel),
+    });
+    const s = await start(one, f, { log: (l) => lines.push(l) });
+    try {
+      const res = await fetch(`${s.url}/transformations/v1.2.0/module.zip`, { redirect: 'manual' });
+      assert.equal(res.status, 302, name);
+      assert.equal(res.headers.get('location'), 'https://objects.example/signed-zip', name);
+      assert.ok(lines.some((l) => /redirected to GitHub \(not patched: /.test(l)), name);
+    } finally {
+      await s.close();
+    }
+  }
+});
+
+test('a zip download cut off midway fails visibly instead of delivering a damaged zip', async () => {
+  const buf = releaseZip();
+  const rel = zipRelease(buf);
+  const lines = [];
+  const plain = signedZip(buf);
+  const cut = signedZip(buf, { cutAfter: 100 });
+  const f = mockFetch({
+    [`${API}/repos/o/transformations/releases/tags/v1.2.0`]: () => json(rel),
+    [rel.assets[1].url]: () => redirect('https://objects.example/signed-zip'),
+    // the planning reads work (the first one covers this small zip whole); the streamed prefix, which stops before
+    // the end of the file, breaks after 100 bytes
+    'https://objects.example/signed-zip': (init) => {
+      const m = /^bytes=0-(\d+)$/.exec(init.headers.Range);
+      return m && Number(m[1]) < buf.length - 1 ? cut(init) : plain(init);
+    },
+  });
+  const s = await start(one, f, { log: (l) => lines.push(l) });
+  try {
+    // the connection is torn down: the client sees an error (before or after the headers), never a complete zip
+    await assert.rejects(async () => {
+      const res = await fetch(`${s.url}/transformations/v1.2.0/module.zip`, { redirect: 'manual' });
+      await res.arrayBuffer();
+    });
+    assert.ok(lines.some((l) => /zip v1\.2\.0 failed after \d+ bytes \(connection reset\)/.test(l)), lines.join(' | '));
+  } finally {
+    await s.close();
+  }
+});
+
+test('a broken partial read while planning falls back to the redirect', async () => {
+  const buf = releaseZip();
+  const rel = zipRelease(buf);
+  const f = mockFetch({
+    [`${API}/repos/o/transformations/releases/tags/v1.2.0`]: () => json(rel),
+    [rel.assets[1].url]: () => redirect('https://objects.example/signed-zip'),
+    'https://objects.example/signed-zip': signedZip(buf, { cutAfter: 10 }),
+  });
+  const s = await start(one, f);
+  try {
+    const res = await fetch(`${s.url}/transformations/v1.2.0/module.zip`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
+  } finally {
+    await s.close();
+  }
 });

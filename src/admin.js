@@ -51,6 +51,7 @@ const UI_FILES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
   '/app.css': { file: 'app.css', type: 'text/css; charset=utf-8' },
+  '/logo.webp': { file: 'logo.webp', type: 'image/webp' },
 };
 const SECURITY_HEADERS = {
   'Content-Security-Policy':

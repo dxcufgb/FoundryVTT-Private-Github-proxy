@@ -187,6 +187,9 @@ test('the admin page is off (404) without a password and needs a login for the A
     assert.equal(page.headers.get('cache-control'), 'no-store');
     assert.match(await page.text(), /Foundry Release Proxy/);
     assert.equal((await fetch(`${s.url}/_admin/app.js`)).status, 200);
+    const logo = await fetch(`${s.url}/_admin/logo.webp`);
+    assert.equal(logo.status, 200);
+    assert.equal(logo.headers.get('content-type'), 'image/webp');
     assert.equal((await fetch(`${s.url}/_admin/nope`)).status, 404);
     assert.equal((await s.call('GET', 'state')).status, 401);
     assert.equal((await s.call('POST', 'modules', { id: 'x', repo: 'o/x' })).status, 401);

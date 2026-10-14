@@ -6,7 +6,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const net = require('node:net');
 const http = require('node:http');
-const { createApp, parseConfig } = require('../src/server.js');
+const { createApp, parseConfig, fileUpdateTrigger, taskUpdateTrigger, ConfigError } = require('../src/server.js');
 const {
   hashPassword,
   verifyPassword,
@@ -51,6 +51,8 @@ async function start({
   fetchImpl,
   mailer,
   envText = `GITHUB_TOKEN=${TOKEN}\nPORT=8787\n`,
+  updateTrigger,
+  version = '1.4.2',
 } = {}) {
   const dir = tmpDir();
   const configFile = path.join(dir, 'config.json');
@@ -68,6 +70,8 @@ async function start({
     configFile,
     envFile,
     adminFile,
+    updateTrigger,
+    version,
     admin: { file: adminFile, settings: parseAdminSettings(fs.readFileSync(adminFile, 'utf8')), hosts: [] },
     fetchImpl: fetchImpl || (async (url) => {
       throw new Error(`unexpected fetch ${url}`);
@@ -779,5 +783,80 @@ test('the daily check waits an hour before mailing that GitHub cannot be reached
     assert.equal(sent.length, 1, 'no more mails before the next day');
   } finally {
     await s.close();
+  }
+});
+
+test('the Linux update trigger rewrites the request file the systemd path unit watches', async () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'update-request');
+  const trigger = fileUpdateTrigger(file);
+  assert.match(await trigger.problem(), /update-request is missing; re-run the installer/);
+  fs.writeFileSync(file, '', { mode: 0o600 });
+  assert.equal(await trigger.problem(), '');
+  await trigger.request();
+  assert.match(fs.readFileSync(file, 'utf8'), /^\d{4}-\d\d-\d\dT[\d:.]+Z\n$/);
+});
+
+test('the Windows update trigger only queries and runs the named task', async () => {
+  const calls = [];
+  let fail = false;
+  const run = (cmd, args, opts, cb) => {
+    calls.push([cmd, ...args]);
+    cb(fail ? new Error('Access is denied.') : null);
+  };
+  const trigger = taskUpdateTrigger('FoundryReleaseProxy-UpdateNow', run);
+  assert.equal(await trigger.problem(), '');
+  await trigger.request();
+  assert.deepEqual(calls, [
+    ['schtasks.exe', '/Query', '/TN', 'FoundryReleaseProxy-UpdateNow'],
+    ['schtasks.exe', '/Run', '/TN', 'FoundryReleaseProxy-UpdateNow'],
+  ]);
+  fail = true;
+  assert.match(await trigger.problem(), /missing or the proxy may not run it/);
+  assert.throws(() => taskUpdateTrigger('bad" & calc', run), ConfigError);
+});
+
+test('"Update proxy now" shows the versions and asks the updater to run, at most every two minutes', async () => {
+  const requests = [];
+  let problem = '';
+  const updateTrigger = { problem: async () => problem, request: async () => requests.push(Date.now()) };
+  const gh = fakeGithub({ repos: { [PROXY_REPO]: { assets: [], tag: 'v1.5.0' } } });
+  const s = await start({ fetchImpl: gh.fetchImpl, updateTrigger, version: '1.4.2' });
+  try {
+    let res = await s.login();
+    assert.equal(res.data.version, '1.4.2');
+    res = await s.call('GET', 'update');
+    assert.deepEqual(res.data, {
+      installed: '1.4.2', latest: '1.5.0', newer: true, latestProblem: '', canUpdate: true, problem: '', requestedAt: null,
+    });
+    // a change: CSRF token needed
+    assert.equal((await s.call('POST', 'update', {}, { 'X-CSRF-Token': 'wrong' })).status, 403);
+    res = await s.call('POST', 'update', {});
+    assert.equal(res.status, 202);
+    assert.equal(requests.length, 1);
+    assert.ok(s.logs.some((l) => /proxy update requested \(installed 1\.4\.2\)/.test(l)));
+    res = await s.call('POST', 'update', {});
+    assert.equal(res.status, 429);
+    assert.equal(requests.length, 1);
+    assert.ok((await s.call('GET', 'update')).data.requestedAt);
+  } finally {
+    await s.close();
+  }
+  // not set up (old install) or the token cannot see the proxy repository
+  problem = 'the scheduled task is missing';
+  const gh2 = fakeGithub({});
+  const s2 = await start({ fetchImpl: gh2.fetchImpl, updateTrigger, version: '1.4.2' });
+  try {
+    await s2.login();
+    const res = await s2.call('GET', 'update');
+    assert.equal(res.data.latest, null);
+    assert.match(res.data.latestProblem, /cannot see dxcufgb\/FoundryVTT-Private-Github-proxy/);
+    assert.equal(res.data.canUpdate, false);
+    const post = await s2.call('POST', 'update', {});
+    assert.equal(post.status, 409);
+    assert.match(post.data.error, /not available: the scheduled task is missing/);
+    assert.equal(requests.length, 1);
+  } finally {
+    await s2.close();
   }
 });

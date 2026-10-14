@@ -21,7 +21,11 @@ installs new releases of the proxy itself.
   delete modules (validated with `parseConfig`, written back to `config.json` in place), the GitHub token (`PUT
   /api/token`: format check, GitHub must accept it, then the `GITHUB_TOKEN` line of `env` (`ENV_FILE`, default next to
   `CONFIG_FILE`) is rewritten in place and the proxy switches over; `POST /api/setup-test`: the token, the proxy's own
-  repo and every module repo, with the typed token or the one in use), notification settings, password change. Settings in `admin.json` (`ADMIN_FILE`, default next to `CONFIG_FILE`): scrypt `passwordHash` + `notify`
+  repo and every module repo, with the typed token or the one in use), "Update proxy now" (`GET /api/update`: installed and
+  latest version; `POST /api/update`, at most every 2 minutes: asks the root/SYSTEM updater to run through the injected
+  `updateTrigger`: Linux `fileUpdateTrigger` rewrites `update-request`, which the installer's systemd path unit
+  `foundry-release-proxy-update-now.path` watches; Windows `taskUpdateTrigger` runs the SYSTEM task
+  `FoundryReleaseProxy-UpdateNow` with `schtasks /Run`), notification settings, password change. Settings in `admin.json` (`ADMIN_FILE`, default next to `CONFIG_FILE`): scrypt `passwordHash` + `notify`
   (recipients, SMTP). Off (404) without a password hash. CLI: `setup FILE` (installers; secrets via `FOUNDRY_PROXY_*` env),
   `check FILE`.
 - `src/mailer.js` – minimal SMTP client (STARTTLS / TLS / plain relay, AUTH PLAIN/LOGIN only over TLS). `src/notify.js` –
@@ -118,9 +122,14 @@ installs new releases of the proxy itself.
   `ADMIN_TRUST_PROXY` names (`1` = loopback, or a list of IPs); anyone else could fake them past the lockout. No HSTS (self-signed certificates would become un-bypassable). The certificate files are
   root-owned, readable by the service. Installers only change `ADMIN_*` lines in `env` on an explicit option
   (`--admin-web`, `-AdminWeb`, first-install prompt).
-- The proxy's account may rewrite `config.json`/`admin.json`/`env` (only its `GITHUB_TOKEN` line) in place but never
-  create files in the settings folder (Linux: files owned by the service user, `ReadWritePaths=` exactly these three;
-  Windows: LOCAL SERVICE `(R,W)`, no delete). Root/SYSTEM read `env` as text only (`env_value`, `Get-EnvValue`,
+- The proxy's account may rewrite `config.json`/`admin.json`/`env` (only its `GITHUB_TOKEN` line) and, on Linux, the
+  empty `update-request` in place but never create files in the settings folder (Linux: files owned by the service
+  user, `ReadWritePaths=` exactly these four; Windows: LOCAL SERVICE `(R,W)`, no delete).
+- **Update proxy now** may only *request* the existing root/SYSTEM update run (`auto-update.sh --apply` /
+  `auto-update.ps1 -Apply`, the same checks as the daily one); nothing the proxy writes or sends may reach that run:
+  root never reads `update-request` (the path unit only reacts to the change), the Windows task takes no arguments and
+  LOCAL SERVICE has only read+run (`GRGX`) on it. The installer pauses the path unit while it (re)makes the file, so an
+  install never counts as a request. Uninstall removes the units/task and the file. Root/SYSTEM read `env` as text only (`env_value`, `Get-EnvValue`,
   `parseTokenFile`), never source it, and validate every value they use from it. Root never parses `admin.json`: `auto-update.sh` runs `notify.js` as the service user via `setpriv`.
 - GitHub's 404 for a repo the token cannot see must stay a 404, not a 502.
 - Installer: re-running it must never overwrite `/etc/foundry-release-proxy/config.json`, `admin.json` or

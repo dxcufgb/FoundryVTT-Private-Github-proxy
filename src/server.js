@@ -9,7 +9,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createAdmin, loadAdminSettings, rewriteFile, replaceEnvValue, tokenKind, SettingsError } = require('./admin.js');
 const { createSelfSigned, defaultNames } = require('./selfsigned.js');
-const { REPO: PROXY_REPO } = require('./updater.js');
+const { execFile } = require('node:child_process');
+const { REPO: PROXY_REPO, compareVersions, parseVersion } = require('./updater.js');
 const { notify } = require('./notify.js');
 
 const GITHUB_API = 'https://api.github.com';
@@ -22,6 +23,53 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const EXPIRY_WARN_DAYS = 14;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+// The version of this copy: the release build stamps the release's version into package.json.
+const PROXY_VERSION = require('../package.json').version;
+// Windows: the SYSTEM task "Update proxy now" starts (install-service.ps1 lets LOCAL SERVICE run it, nothing more).
+const TASK_NAME_RE = /^[A-Za-z0-9_.-]{1,100}$/;
+
+/**
+ * "Update proxy now" on Linux: rewrite the request file in place (root-owned systemd path unit watches it and starts
+ * the root update run; root never reads what is written). problem() => '' when the proxy may write it.
+ */
+function fileUpdateTrigger(file) {
+  return {
+    async problem() {
+      try {
+        fs.closeSync(fs.openSync(file, 'r+'));
+        return '';
+      } catch (err) {
+        return err.code === 'ENOENT'
+          ? `${file} is missing; re-run the installer of this version to set up "Update proxy now"`
+          : `the proxy's account may not write ${file} (${err.code || err.message}); re-run the installer of this version`;
+      }
+    },
+    async request() {
+      rewriteFile(file, `${new Date().toISOString()}\n`);
+    },
+  };
+}
+
+/** "Update proxy now" on Windows: start the installer's SYSTEM task (no arguments can be passed to it). */
+function taskUpdateTrigger(taskName, run = execFile) {
+  if (!TASK_NAME_RE.test(taskName)) throw new ConfigError(`invalid UPDATE_TASK "${taskName}"`);
+  const schtasks = (args) => new Promise((resolve, reject) => {
+    run('schtasks.exe', args, { windowsHide: true, timeout: 30000 }, (err) => (err ? reject(err) : resolve()));
+  });
+  return {
+    async problem() {
+      try {
+        await schtasks(['/Query', '/TN', taskName]);
+        return '';
+      } catch {
+        return `the scheduled task ${taskName} is missing or the proxy may not run it; re-run the installer of this version`;
+      }
+    },
+    async request() {
+      await schtasks(['/Run', '/TN', taskName]);
+    },
+  };
+}
 
 class ConfigError extends Error {}
 
@@ -100,6 +148,8 @@ function createApp({
   adminFile,
   adminUrl,
   admin,
+  updateTrigger,
+  version = PROXY_VERSION,
   fetchImpl = fetch,
   log = console.log,
   mailer,
@@ -373,6 +423,36 @@ function createApp({
     };
   }
 
+  // "Update proxy now": the installed version, the latest release the proxy's token can see, and the trigger.
+  const proxyUpdate = {
+    version,
+    async info() {
+      const out = { installed: version, latest: null, newer: null, latestProblem: '', canUpdate: false, problem: '' };
+      try {
+        const release = await getRelease(PROXY_REPO);
+        out.latest = String(release.tag_name || '').replace(/^v/, '');
+        if (parseVersion(out.latest) && parseVersion(version)) out.newer = compareVersions(out.latest, version) > 0;
+      } catch (err) {
+        if (err instanceof NotFound) {
+          out.latestProblem = `the proxy's token cannot see ${PROXY_REPO} (the updater may have a token of its own)`;
+        } else if (err instanceof GithubError) {
+          out.latestProblem = `GitHub request failed (${err.status})`;
+        } else {
+          throw err;
+        }
+      }
+      out.problem = await proxyUpdate.problem();
+      out.canUpdate = !out.problem;
+      return out;
+    },
+    // '' when "Update proxy now" can be used here.
+    problem: async () => (updateTrigger ? updateTrigger.problem() : 'not set up on this machine (the installers set it up)'),
+    async request() {
+      if (!updateTrigger) throw new Error('not set up on this machine');
+      await updateTrigger.request();
+    },
+  };
+
   const githubToken = {
     info: () => ({ kind: tokenKind(currentToken), file: envFile || null, problem: tokenStorageProblem(), lastCheck }),
     check: checkToken,
@@ -401,6 +481,7 @@ function createApp({
     },
     checkRelease,
     githubToken,
+    proxyUpdate,
   });
 
   async function route(req, res) {
@@ -606,7 +687,14 @@ function main(env = process.env) {
 
     const admin = adminOn ? { file: adminFile, settings: adminSettings, hosts, trustProxy } : undefined;
     const adminUrl = env.ADMIN_PUBLIC_URL ? `${env.ADMIN_PUBLIC_URL.replace(/\/+$/, '')}/_admin/` : undefined;
-    const server = createApp({ modules, token, publicBaseUrl, configFile, envFile, adminFile, adminUrl, admin });
+    // "Update proxy now": Linux rewrites the request file the installer's systemd path unit watches, Windows starts
+    // the installer's SYSTEM task. Both run the same update as the daily updater.
+    const updateTrigger = process.platform === 'win32'
+      ? taskUpdateTrigger(env.UPDATE_TASK || 'FoundryReleaseProxy-UpdateNow')
+      : fileUpdateTrigger(env.UPDATE_REQUEST_FILE || path.join(path.dirname(configFile), 'update-request'));
+    const server = createApp({
+      modules, token, publicBaseUrl, configFile, envFile, adminFile, adminUrl, admin, updateTrigger,
+    });
     // DAILY_CHECK=off: no daily "Test setup" and no problem e-mails.
     const dailyCheck = !/^(off|0|false|no)$/i.test(env.DAILY_CHECK || '');
     if (dailyCheck) server.startDailyChecks();
@@ -640,4 +728,4 @@ function main(env = process.env) {
 
 if (require.main === module) main();
 
-module.exports = { createApp, loadConfig, parseConfig, ConfigError };
+module.exports = { createApp, loadConfig, parseConfig, fileUpdateTrigger, taskUpdateTrigger, ConfigError };

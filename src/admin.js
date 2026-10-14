@@ -38,6 +38,8 @@ const LOCKOUT_MS = 5 * 60 * 1000;
 // Across all addresses: more failed logins than this within GLOBAL_WINDOW_MS pause every login for that long.
 const GLOBAL_FAILURES = 50;
 const GLOBAL_WINDOW_MS = 15 * 60 * 1000;
+// "Update proxy now" can be pressed again after this long (the update itself takes a minute or two).
+const UPDATE_COOLDOWN_MS = 2 * 60 * 1000;
 const COOKIE = 'frp_admin';
 const PREFIX = '/_admin';
 const SMTP_KEYS = ['host', 'port', 'security', 'user', 'password', 'from'];
@@ -334,6 +336,8 @@ function hostOf(value) {
  *   check(token) => { status, message, ... }   what GitHub says about the token (status 'bad' = refused or unreachable)
  *   save(token)                          writes it to file and switches the proxy over
  *   test(token) => { token, checks }     the token, the proxy's own repository and every module repository
+ * proxyUpdate: { version, info() => { installed, latest, newer, latestProblem, canUpdate, problem }, problem(), request() } –
+ *   "Update proxy now" only asks the root/SYSTEM updater to run; it never runs update code itself.
  * Returns { handles(pathname), handle(req, res, pathname) }.
  */
 function createAdmin({
@@ -345,6 +349,7 @@ function createAdmin({
   checkRelease,
   validateModules,
   githubToken,
+  proxyUpdate,
   extraHosts = [],
   trustProxy = false,
   log = console.log,
@@ -356,6 +361,7 @@ function createAdmin({
   const sessions = new Map(); // id -> { csrf, expires }
   const failures = new Map(); // remote address -> { count, until }
   let globalFailures = []; // times of recent failed logins, any address
+  let updateRequestedAt = 0;
   // DNS rebinding sends the attacker's own name; this machine's names and addresses (LAN access) are fine.
   const hostAllowed = (h) => hosts.has(h) || machineHosts(now()).has(h);
   const ui = Object.create(null);
@@ -442,7 +448,14 @@ function createAdmin({
   }
 
   function state(csrf) {
-    return { csrf, modules: moduleList(), notify: notifyView(), token: tokenView(), publicBaseUrl: base };
+    return {
+      csrf,
+      modules: moduleList(),
+      notify: notifyView(),
+      token: tokenView(),
+      version: proxyUpdate ? proxyUpdate.version : null,
+      publicBaseUrl: base,
+    };
   }
 
   /** Builds a module entry from a request body; only non-default asset names are stored. */
@@ -643,6 +656,32 @@ function createAdmin({
       log(`admin: setup test (${typed ? 'typed' : 'saved'} token): token ${result.token.status}, ` +
         `${result.checks.length - bad} of ${result.checks.length} repositories ok`);
       return sendJson(res, 200, { tested: typed ? 'typed' : 'saved', ...result });
+    }
+
+    if (route === '/api/update' && method === 'GET') {
+      if (!proxyUpdate) throw new HttpError(404, 'not found');
+      const info = await proxyUpdate.info();
+      return sendJson(res, 200, { ...info, requestedAt: updateRequestedAt ? new Date(updateRequestedAt).toISOString() : null });
+    }
+
+    if (route === '/api/update' && method === 'POST') {
+      if (!proxyUpdate) throw new HttpError(404, 'not found');
+      const wait = updateRequestedAt + UPDATE_COOLDOWN_MS - now();
+      if (wait > 0) {
+        throw new HttpError(429, `an update was requested ${Math.round((now() - updateRequestedAt) / 1000)} s ago; ` +
+          `try again in ${Math.ceil(wait / 1000)} s`);
+      }
+      const problem = await proxyUpdate.problem();
+      if (problem) throw new HttpError(409, `"Update proxy now" is not available: ${problem}`);
+      try {
+        await proxyUpdate.request();
+      } catch (err) {
+        log(`admin: requesting the proxy update failed (${err.code || err.message})`);
+        throw new HttpError(500, 'could not start the update; see the proxy log');
+      }
+      updateRequestedAt = now();
+      log(`admin: proxy update requested (installed ${proxyUpdate.version})`);
+      return sendJson(res, 202, { ok: true, requestedAt: new Date(updateRequestedAt).toISOString() });
     }
 
     if (route === '/api/password' && method === 'PUT') {

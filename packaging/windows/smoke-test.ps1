@@ -70,6 +70,18 @@ try {
     if (-not $state.token.canChange) { throw "the admin page cannot change the token: $($state.token.problem)" }
     Write-Output 'admin page logs in, saves modules and may change the token'
 
+    # "Update proxy now": the proxy (LOCAL SERVICE) may start the SYSTEM task (the update fails: the token is fake).
+    $before = (Get-ScheduledTaskInfo -TaskName 'FoundryReleaseProxy-UpdateNow').LastRunTime
+    Invoke-WebRequest -UseBasicParsing -Uri "$base/update" -Method Post -ContentType 'application/json' -WebSession $admin `
+        -Headers @{ 'X-CSRF-Token' = $csrf } -Body '{}' | Out-Null
+    $ran = $false
+    for ($i = 0; $i -lt 30 -and -not $ran; $i++) {
+        Start-Sleep -Seconds 2
+        $ran = (Get-ScheduledTaskInfo -TaskName 'FoundryReleaseProxy-UpdateNow').LastRunTime -ne $before
+    }
+    if (-not $ran) { throw 'the admin page could not start the FoundryReleaseProxy-UpdateNow task' }
+    Write-Output 'admin page starts the update task'
+
     # The browser admin port (the wizard's default): HTTPS with the self-signed certificate, firewall rule present.
     $node = "$env:ProgramFiles\FoundryReleaseProxy-Node\node.exe"
     $probe = "require('https').get({host:'localhost',port:8788,path:'/_admin/',rejectUnauthorized:false}," +
@@ -85,6 +97,7 @@ try {
     if ($p.ExitCode -ne 0) { throw "uninstaller exited with $($p.ExitCode)" }
     Start-Sleep -Seconds 2
     if (Get-ScheduledTask -TaskName 'FoundryReleaseProxy' -ErrorAction SilentlyContinue) { throw 'scheduled task still registered' }
+    if (Get-ScheduledTask -TaskName 'FoundryReleaseProxy-UpdateNow' -ErrorAction SilentlyContinue) { throw 'update task still registered' }
     if (Test-Path -LiteralPath $app) { throw "$app still exists after uninstall" }
     if (Get-NetFirewallRule -Name 'FoundryReleaseProxy-Admin' -ErrorAction SilentlyContinue) { throw 'firewall rule left behind' }
     if (-not (Test-Path -LiteralPath "$data\env")) { throw 'a silent uninstall must keep the token and config' }

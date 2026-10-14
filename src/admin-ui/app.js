@@ -8,6 +8,8 @@
   let state = null;
   let recipients = [];
   let editing = null; // module id being edited, null when adding
+  let update = null; // the last GET update answer
+  let watching = null; // timer while waiting for an update to restart the proxy
 
   function toast(message, bad = false) {
     const el = $('#toast');
@@ -58,6 +60,7 @@
     $('#app-view').hidden = false;
     $('#logout').hidden = false;
     render(data);
+    checkUpdate();
   }
 
   function el(tag, props = {}, children = []) {
@@ -92,7 +95,93 @@
     state = data;
     renderModules();
     renderToken();
+    renderVersion();
     renderNotify();
+  }
+
+  function renderVersion(note) {
+    const status = $('#version-status');
+    let text = `Installed: ${state.version || 'unknown'}.`;
+    let bad = false;
+    if (update) {
+      if (update.latest) {
+        text += ` Latest release: ${update.latest}` +
+          (update.newer === true ? ' (newer).' : update.newer === false ? ' (this is up to date).' : '.');
+      } else if (update.latestProblem) {
+        text += ` Latest release unknown: ${update.latestProblem}.`;
+      }
+      if (update.problem) {
+        text += ` "Update proxy now" is not available: ${update.problem}`;
+        bad = true;
+      }
+    }
+    if (note) text += ` ${note}`;
+    status.textContent = text;
+    status.className = bad ? 'error' : '';
+    $('#update-now').disabled = Boolean(watching) || !update || !update.canUpdate;
+  }
+
+  async function checkUpdate(e) {
+    const button = $('#update-check');
+    button.disabled = true;
+    try {
+      update = await call('GET', 'update');
+      renderVersion();
+      if (e) toast(update.newer ? `Version ${update.latest} is available.` : 'Checked for updates.');
+    } catch (err) {
+      if (e) toast(err.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  // After "Update proxy now": the proxy restarts when a newer release was installed (and then needs a new login).
+  function watchUpdate(before) {
+    const started = Date.now();
+    clearInterval(watching);
+    watching = setInterval(async () => {
+      if (Date.now() - started > 5 * 60 * 1000) {
+        clearInterval(watching);
+        watching = null;
+        renderVersion('No restart within 5 minutes: there was no newer release, or the update failed (see the ' +
+          'notification e-mail or the update log).');
+        return;
+      }
+      try {
+        const data = await call('GET', 'state');
+        if (data.version !== before) {
+          clearInterval(watching);
+          watching = null;
+          render(data);
+          toast(`Updated to ${data.version}.`);
+        }
+      } catch (err) {
+        if (!$('#login-view').hidden) {
+          // the session ended: the proxy restarted, most likely with the new version
+          clearInterval(watching);
+          watching = null;
+          $('#login-error').textContent = 'The proxy restarted (after the update); please log in again.';
+          $('#login-error').hidden = false;
+        }
+        // otherwise the proxy is restarting: keep waiting
+      }
+    }, 5000);
+  }
+
+  async function updateNow(e) {
+    const what = update && update.newer ? `version ${update.latest}` : 'the latest release (if it is newer)';
+    if (!confirm(`Install ${what} now?\nThe proxy restarts; Foundry cannot reach it for a few seconds and you log in again.`)) return;
+    const button = e.currentTarget;
+    button.disabled = true;
+    try {
+      await call('POST', 'update', {});
+      watchUpdate(state.version);
+      renderVersion('Update requested; waiting for the proxy to restart…');
+      toast('Update started.');
+    } catch (err) {
+      toast(err.message, true);
+      renderVersion();
+    }
   }
 
   function renderToken() {
@@ -397,6 +486,8 @@
     $('#module-form').addEventListener('submit', saveModule);
     $('#module-cancel').addEventListener('click', () => $('#module-dialog').close());
     $('#token-form').addEventListener('submit', saveToken);
+    $('#update-check').addEventListener('click', checkUpdate);
+    $('#update-now').addEventListener('click', updateNow);
     $('#setup-test').addEventListener('click', testSetup);
     $('#notify-form').addEventListener('submit', saveNotify);
     $('#notify-test').addEventListener('click', testNotify);

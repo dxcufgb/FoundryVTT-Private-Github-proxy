@@ -291,6 +291,9 @@ What it does:
   unless they have their own updater token) and each module's (can the token see it, is there a published release,
   does it have the manifest and zip assets). With a token in the field it tests that one without saving it. The line
   below shows the result of the last [daily check](#daily-check).
+- **Proxy version**: the installed version and the latest release (when the proxy's token can see this repository),
+  **Check for update** and **Update proxy now**, which installs the latest release right away instead of waiting for
+  the daily [automatic update](#automatic-updates) or logging in to the machine. See [Update proxy now](#update-proxy-now).
 - **Notifications**: the e-mail addresses that hear about automatic updates and daily-check problems (see below), the
   SMTP server that sends them, and **Send test e-mail**. The SMTP password is never shown again; leave the field empty
   to keep it.
@@ -311,8 +314,9 @@ Content-Security-Policy and is never cached. The GitHub token is never shown on 
 `C:\ProgramData\FoundryReleaseProxy\admin.json`) holds the password hash and the notification settings, including the
 SMTP password. Like `env` it is readable only by the proxy's account (Linux: owned by `foundry-proxy`, mode `600`;
 Windows: Administrators, SYSTEM and LOCAL SERVICE). The proxy's account may rewrite `config.json`, `admin.json` and
-`env` (only its `GITHUB_TOKEN` line, with a value of letters, digits and `_`) in place, but cannot create or delete
-files in the settings folder; on Linux the systemd unit allows writes to exactly these three files. Installs from
+`env` (only its `GITHUB_TOKEN` line, with a value of letters, digits and `_`) in place, and on Linux the empty
+`update-request` file (see [Update proxy now](#update-proxy-now)), but cannot create or delete files in the settings
+folder; on Linux the systemd unit allows writes to exactly these four files. Installs from
 before this version get that permission for `env` when the installer runs again (an automatic update does it); until
 then the page says the token cannot be changed there. Re-running the installer never overwrites `admin.json`; `--set-notify` (`-SetNotify`) re-enters the
 e-mail settings from the command line.
@@ -469,7 +473,7 @@ SYSTEM daily at 03:00 plus up to 6 hours of random delay.
 | turn on later | `sudo ./install.sh --enable-auto-update` | `.\scripts\install-service.ps1 -EnableAutoUpdate` |
 | turn off | `sudo ./install.sh --disable-auto-update` | `.\scripts\install-service.ps1 -DisableAutoUpdate` |
 | check only (exit 0 = current, 10 = update available) | `sudo ./install.sh --check-update` | `.\scripts\install-service.ps1 -Check` |
-| update now | `sudo ./install.sh --update-now` | `.\scripts\install-service.ps1 -UpdateNow` |
+| update now | `sudo ./install.sh --update-now`, or [**Update proxy now**](#update-proxy-now) on the admin page | `.\scripts\install-service.ps1 -UpdateNow`, or the admin page |
 | log | `journalctl -u foundry-release-proxy-update` | `C:\ProgramData\FoundryReleaseProxy\auto-update.log` |
 
 On Linux `sudo ./scripts/install-service.sh` takes the same options (`--check` is the older name of `--check-update`).
@@ -515,6 +519,28 @@ goes into `env`), or update `updater-token` if the updater has its own; a failin
 **Limits.** The checksum guards against corrupted or truncated downloads; it comes from the same release, so it does
 not protect against someone who can publish releases in this repository. Updates restart the proxy (a few seconds of
 downtime). The previous version stays in the `.prev` folder until the next update.
+
+### Update proxy now
+
+**Update proxy now** on the admin page runs the same update as the daily automatic update, at once, whether or not
+automatic updates are turned on: same token (`TOKEN_FILE` in `auto-update.conf`, else the proxy's `env`), same checks
+(only a strictly newer, checksum-verified release; rollback on failure), same log and the same notification e-mail.
+The proxy restarts when a newer version was installed, which ends every admin login; the page waits for that and
+asks you to log in again. The button can be pressed again after two minutes.
+
+The proxy itself never runs the update (it has no rights to): it only asks the root (Linux) or SYSTEM (Windows)
+updater the installer set up to run now, and nothing it sends can change what that updater does.
+
+- **Linux**: the installer creates `/etc/foundry-release-proxy/update-request` (empty, owned by `foundry-proxy`, mode
+  `600`) and the systemd units `foundry-release-proxy-update-now.path` and `-update-now.service`. The proxy writes the
+  time into that file; the path unit sees the change and starts the update service as root. Root never reads the file.
+  Log: `journalctl -u foundry-release-proxy-update-now`.
+- **Windows**: the installer registers the task `FoundryReleaseProxy-UpdateNow` (SYSTEM, no schedule) and lets LOCAL
+  SERVICE run it, but not change it; the proxy starts it with `schtasks /Run`. Log: `auto-update.log`, as above.
+
+Installs from before this version get the button when the installer runs again (an automatic update does it); until
+then the page says it is not set up. `UPDATE_REQUEST_FILE` (Linux) and `UPDATE_TASK` (Windows) in `env` override the
+file and task names for a hand-made setup.
 
 ## Releases
 

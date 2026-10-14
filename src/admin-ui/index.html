@@ -64,6 +64,19 @@
       </section>
 
       <section class="card">
+        <h2>Proxy version</h2>
+        <p class="hint">Installs the latest release of the proxy now instead of waiting for the daily automatic update
+          (or logging in to the machine). It runs the installer's own updater: only a newer, checksum-verified release
+          is installed, and a failed update puts the previous version back. The proxy restarts afterwards, so you log in
+          again. The notification e-mail says how it went.</p>
+        <p id="version-status"></p>
+        <div class="buttons">
+          <button type="button" id="update-check" class="secondary">Check for update</button>
+          <button type="button" id="update-now">Update proxy now</button>
+        </div>
+      </section>
+
+      <section class="card">
         <h2>Notifications</h2>
         <p class="hint">E-mails go to every address below when the proxy updates itself (or an automatic update fails;
           automatic updates are turned on with the installer) and when its daily check finds a problem: a token GitHub

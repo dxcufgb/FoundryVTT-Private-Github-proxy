@@ -31,7 +31,8 @@ Layout (config.json and env are created once and never overwritten):
   C:\ProgramData\FoundryReleaseProxy\auto-update.conf, auto-update.log, updater-token (Administrators/SYSTEM only)
 
 The proxy runs as the scheduled task "FoundryReleaseProxy" under LOCAL SERVICE (node --env-file, Node.js >= 20.6).
-The updater runs daily (random delay) as the task "FoundryReleaseProxy-Update" under SYSTEM.
+The updater runs daily (random delay) as the task "FoundryReleaseProxy-Update" under SYSTEM. "Update proxy now" on the
+admin page starts the task "FoundryReleaseProxy-UpdateNow" (SYSTEM, no schedule; LOCAL SERVICE may only run it).
 Tokens come from a hidden prompt or the FOUNDRY_PROXY_GITHUB_TOKEN / UPDATER_GITHUB_TOKEN environment variables,
 never from the command line. The same goes for the admin page password (FOUNDRY_PROXY_ADMIN_PASSWORD) and the
 notification settings (FOUNDRY_PROXY_NOTIFY_EMAILS, FOUNDRY_PROXY_SMTP_HOST, _PORT, _SECURITY, _USER, _PASSWORD, _FROM).
@@ -76,6 +77,7 @@ $AutoConf = Join-Path $DataDir 'auto-update.conf'
 $UpdaterTokenFile = Join-Path $DataDir 'updater-token'
 $TaskName = $AppName
 $UpdateTaskName = "$AppName-Update"
+$UpdateNowTaskName = "$AppName-UpdateNow"
 $UpdateRepo = 'dxcufgb/FoundryVTT-Private-Github-proxy'
 $SrcDir = Split-Path -Parent $PSScriptRoot
 $Utf8 = New-Object System.Text.UTF8Encoding $false
@@ -371,6 +373,30 @@ function Unregister-UpdaterTask {
     }
 }
 
+# "Update proxy now" on the admin page: a SYSTEM task without a schedule that runs the same update as the daily task,
+# whether or not daily updates are on. LOCAL SERVICE (the proxy) may read and run it, not change it; a run takes no
+# arguments, so the proxy can only say "run now".
+function Register-UpdateNowTask {
+    $script = Join-Path $AppDir 'scripts\auto-update.ps1'
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -WorkingDirectory $DataDir `
+        -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$script`" -Apply"
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+    $principal = New-ScheduledTaskPrincipal -UserId (Get-AccountName $SidSystem) -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName $UpdateNowTaskName -Action $action -Settings $settings -Principal $principal `
+        -Description "Update the Foundry release proxy now (from its admin page)" -Force | Out-Null
+    $scheduler = New-Object -ComObject 'Schedule.Service'
+    $scheduler.Connect()
+    $task = $scheduler.GetFolder('\').GetTask($UpdateNowTaskName)
+    $task.SetSecurityDescriptor("D:(A;;FA;;;$SidAdmins)(A;;FA;;;$SidSystem)(A;;GRGX;;;$SidLocalService)", 0)
+}
+
+function Unregister-UpdateNowTask {
+    if (Get-ScheduledTask -TaskName $UpdateNowTaskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $UpdateNowTaskName -Confirm:$false
+    }
+}
+
 function Invoke-Updater([string]$Mode) {
     $script = Join-Path $AppDir 'scripts\auto-update.ps1'
     if (-not (Test-Path -LiteralPath $script)) { throw "$AppDir has no updater; install this version first." }
@@ -452,6 +478,7 @@ if (-not (Test-Admin)) {
 
 if ($Uninstall) {
     Unregister-UpdaterTask
+    Unregister-UpdateNowTask
     Invoke-ProxyShutdown
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
@@ -583,6 +610,7 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatt
 $principal = New-ScheduledTaskPrincipal -UserId (Get-AccountName $SidLocalService) -LogonType ServiceAccount -RunLevel Limited
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal `
     -Description 'Foundry VTT private-release proxy' -Force | Out-Null
+Register-UpdateNowTask
 
 $placeholder = [IO.File]::ReadAllLines($EnvFile) | Where-Object { $_ -eq 'GITHUB_TOKEN=REPLACE_ME' }
 if ($placeholder) {

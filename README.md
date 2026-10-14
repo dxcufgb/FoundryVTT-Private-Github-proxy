@@ -145,7 +145,7 @@ Node.js that `install.sh` downloaded; keeps `/etc/foundry-release-proxy/config.j
 systemctl status foundry-release-proxy
 journalctl -u foundry-release-proxy -f
 curl -s  http://localhost:8787/transformations/module.json   # manifest; "download" points at the proxy
-curl -sI http://localhost:8787/transformations/v1.2.0/module.zip   # expect HTTP 302 and a Location: header
+curl -sI http://localhost:8787/transformations/v1.2.0/module.zip   # HTTP 200 (zip with module.json patched), or 302 + Location: when it cannot be patched
 ```
 
 Use the tag of a real release in the second command. Day to day: `sudo systemctl status|restart|stop foundry-release-proxy`.

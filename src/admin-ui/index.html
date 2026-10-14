@@ -46,9 +46,28 @@
       </section>
 
       <section class="card">
-        <h2>Update notifications</h2>
-        <p class="hint">When the proxy updates itself (or an automatic update fails) it sends an e-mail to every address
-          below. Automatic updates are turned on with the installer.</p>
+        <h2>GitHub token</h2>
+        <p class="hint">The proxy reads the module repositories (and, for automatic updates, its own repository) with this
+          token. It is never shown here. Before it expires, create a new one on GitHub, paste it below and save it: it is
+          used at once. <strong>Test setup</strong> checks the token and every repository; with a token in the field it
+          tests that one without saving it.</p>
+        <p id="token-status"></p>
+        <form id="token-form">
+          <label>New token <input type="password" name="token" autocomplete="off" spellcheck="false" placeholder="github_pat_…"></label>
+          <div class="buttons">
+            <button type="submit" id="token-save">Save token</button>
+            <button type="button" id="setup-test" class="secondary">Test setup</button>
+          </div>
+        </form>
+        <ul id="setup-results" class="results" hidden></ul>
+        <p id="daily-check" class="hint"></p>
+      </section>
+
+      <section class="card">
+        <h2>Notifications</h2>
+        <p class="hint">E-mails go to every address below when the proxy updates itself (or an automatic update fails;
+          automatic updates are turned on with the installer) and when its daily check finds a problem: a token GitHub
+          no longer accepts, or a repository the token cannot read.</p>
         <form id="notify-form">
           <fieldset>
             <legend>Recipients</legend>

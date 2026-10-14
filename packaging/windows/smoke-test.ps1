@@ -65,7 +65,10 @@ try {
     Invoke-WebRequest -UseBasicParsing -Uri "$base/modules" -Method Post -ContentType 'application/json' -WebSession $admin `
         -Headers @{ 'X-CSRF-Token' = $csrf } -Body (@{ id = 'smoke'; repo = 'octo/smoke' } | ConvertTo-Json) | Out-Null
     if ((Get-Content -LiteralPath "$data\config.json" -Raw) -notmatch '"smoke"') { throw 'the admin page did not write config.json' }
-    Write-Output 'admin page logs in and saves modules'
+    # LOCAL SERVICE may rewrite env, where a GitHub token changed on the admin page is saved.
+    $state = (Invoke-WebRequest -UseBasicParsing -Uri "$base/state" -WebSession $admin).Content | ConvertFrom-Json
+    if (-not $state.token.canChange) { throw "the admin page cannot change the token: $($state.token.problem)" }
+    Write-Output 'admin page logs in, saves modules and may change the token'
 
     # The browser admin port (the wizard's default): HTTPS with the self-signed certificate, firewall rule present.
     $node = "$env:ProgramFiles\FoundryReleaseProxy-Node\node.exe"

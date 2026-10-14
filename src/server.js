@@ -7,8 +7,10 @@ const https = require('node:https');
 const net = require('node:net');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createAdmin, loadAdminSettings, rewriteFile, SettingsError } = require('./admin.js');
+const { createAdmin, loadAdminSettings, rewriteFile, replaceEnvValue, tokenKind, SettingsError } = require('./admin.js');
 const { createSelfSigned, defaultNames } = require('./selfsigned.js');
+const { REPO: PROXY_REPO } = require('./updater.js');
+const { notify } = require('./notify.js');
 
 const GITHUB_API = 'https://api.github.com';
 const TIMEOUT_MS = 20000;
@@ -16,6 +18,10 @@ const MODULE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const ASSET_RE = /^[^/\\\s][^/\\]*$/;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+// A token that expires within this many days is reported as a warning by "Test setup".
+const EXPIRY_WARN_DAYS = 14;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 class ConfigError extends Error {}
 
@@ -83,12 +89,27 @@ function loadConfig(file, options) {
 }
 
 // admin: { file, settings, hosts, trustProxy } turns on the /_admin page (when settings has a password hash); its module changes
-// are written to configFile.
-function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl = fetch, log = console.log, mailer }) {
+// are written to configFile, a new GitHub token to the GITHUB_TOKEN line of envFile. The daily check mails the
+// recipients in adminFile (admin.json, whether or not the page is on) and points them to adminUrl.
+function createApp({
+  modules,
+  token,
+  publicBaseUrl,
+  configFile,
+  envFile,
+  adminFile,
+  adminUrl,
+  admin,
+  fetchImpl = fetch,
+  log = console.log,
+  mailer,
+}) {
   const base = publicBaseUrl.replace(/\/+$/, '');
+  // The admin page can replace it (githubToken.save below).
+  let currentToken = token;
 
-  const apiHeaders = (accept) => ({
-    Authorization: `Bearer ${token}`,
+  const apiHeaders = (accept, tok = currentToken) => ({
+    Authorization: `Bearer ${tok}`,
     Accept: accept,
     'X-GitHub-Api-Version': '2022-11-28',
     'User-Agent': 'foundry-release-proxy',
@@ -102,10 +123,10 @@ function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl
     }
   }
 
-  async function getRelease(repo, tag) {
+  async function getRelease(repo, tag, tok) {
     const path = tag === undefined ? 'latest' : `tags/${encodeURIComponent(tag)}`;
     const res = await api(`${GITHUB_API}/repos/${repo}/releases/${path}`, {
-      headers: apiHeaders('application/vnd.github+json'),
+      headers: apiHeaders('application/vnd.github+json', tok),
     });
     if (res.status === 404) {
       // GitHub also answers 404 when the token cannot see a private repo.
@@ -172,6 +193,198 @@ function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl
     }
   }
 
+  // Where a token set on the admin page goes: the GITHUB_TOKEN line of envFile, rewritten in place. '' = it can.
+  function tokenStorageProblem() {
+    if (!envFile) return 'no env file (set ENV_FILE)';
+    let text;
+    try {
+      text = fs.readFileSync(envFile, 'utf8');
+    } catch (err) {
+      return `cannot read it (${err.code || err.message})`;
+    }
+    if (replaceEnvValue(text, 'GITHUB_TOKEN', 'x') === null) return 'it has no GITHUB_TOKEN line';
+    try {
+      // Opening for writing (nothing is written) is the real test: systemd's read-only mounts, Windows ACLs.
+      fs.closeSync(fs.openSync(envFile, 'r+'));
+    } catch (err) {
+      return `the proxy's account may not write it (${err.code || err.message}); re-run the installer of this version`;
+    }
+    return '';
+  }
+
+  // GET /user: whether GitHub accepts the token, whose it is and when it expires. Never returns the token.
+  async function checkToken(tok) {
+    let res;
+    try {
+      res = await api(`${GITHUB_API}/user`, { headers: apiHeaders('application/vnd.github+json', tok) });
+    } catch (err) {
+      const message = `could not reach GitHub (${err.message.replace(/^request failed: /, '')})`;
+      return { status: 'bad', unreachable: true, message };
+    }
+    const header = res.headers.get('github-authentication-token-expiration') || '';
+    const expires = /^[0-9A-Za-z :+-]{1,40}$/.test(header) ? header : null;
+    let login = null;
+    if (res.ok) {
+      try {
+        const user = await res.json();
+        if (typeof user.login === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(user.login)) login = user.login;
+      } catch {
+        // the status alone says the token works
+      }
+    } else {
+      await res.body?.cancel?.();
+    }
+    if (res.status === 401) return { status: 'bad', message: 'GitHub rejects the token (expired, revoked or mistyped)' };
+    if (!res.ok && res.status !== 403) return { status: 'bad', message: `GitHub answered HTTP ${res.status}` };
+    const days = expires ? (Date.parse(expires) - Date.now()) / 86400000 : NaN;
+    const owner = login ? ` (${login})` : '';
+    if (days < 0) return { status: 'bad', login, expires, message: `the token expired on ${expires}` };
+    if (days < EXPIRY_WARN_DAYS) {
+      const left = days < 1 ? 'within a day' : `in ${Math.floor(days)} day(s)`;
+      return { status: 'warn', login, expires, message: `accepted${owner}, but it expires ${left}: replace it soon` };
+    }
+    return { status: 'ok', login, expires, message: `accepted${owner}` + (expires ? `; expires ${expires}` : '; no expiry date') };
+  }
+
+  // GET /repos/<repo>: null when the token can see the repository, else a failed check saying why not.
+  async function repoAccess(repo, tok) {
+    let res;
+    try {
+      res = await api(`${GITHUB_API}/repos/${repo}`, { headers: apiHeaders('application/vnd.github+json', tok) });
+    } catch (err) {
+      return { status: 'bad', unreachable: true, message: `could not reach GitHub (${err.message.replace(/^request failed: /, '')})` };
+    }
+    await res.body?.cancel?.();
+    if (res.ok) return null;
+    if (res.status === 404) {
+      return { status: 'bad', message: "the token cannot see this repository (add it to the token's Repository access)" };
+    }
+    if (res.status === 401) return { status: 'bad', message: 'GitHub rejects the token' };
+    if (res.status === 403) {
+      return { status: 'bad', message: 'GitHub refused access (HTTP 403): the token may lack Contents: read-only, or its owner blocks this token' };
+    }
+    return { status: 'bad', message: `GitHub answered HTTP ${res.status}` };
+  }
+
+  // One line of "Test setup": can the token see the repository, and does its latest release have the assets?
+  async function checkRepo(repo, assets, tok) {
+    const denied = await repoAccess(repo, tok);
+    if (denied) return denied;
+    let release;
+    try {
+      release = await getRelease(repo, undefined, tok);
+    } catch (err) {
+      if (err instanceof NotFound) return { status: 'bad', message: 'no published release (drafts and pre-releases do not count)' };
+      if (err instanceof GithubError && err.status === 'network') {
+        return { status: 'bad', unreachable: true, message: `could not reach GitHub (${err.message.replace(/^request failed: /, '')})` };
+      }
+      if (err instanceof GithubError) return { status: 'bad', message: `release lookup failed (HTTP ${err.status})` };
+      throw err;
+    }
+    const names = (release.assets || []).map((a) => a.name);
+    const missing = assets.filter((n) => !names.includes(n));
+    if (missing.length) return { status: 'bad', message: `latest release ${release.tag_name} lacks ${missing.join(', ')}` };
+    return { status: 'ok', message: `latest release ${release.tag_name}` };
+  }
+
+  // "Test setup": the token, then this proxy's own repository (automatic updates) and every module repository.
+  async function testSetup(tok = currentToken) {
+    const token = await checkToken(tok);
+    if (token.status === 'bad') return { token, checks: [] };
+    const proxy = checkRepo(PROXY_REPO, [], tok).then((r) => {
+      // Only needed when automatic updates use the proxy's token rather than an updater token of their own.
+      const why = 'automatic updates need it unless they have their own updater token';
+      return { kind: 'proxy', name: 'Automatic updates', repo: PROXY_REPO,
+        ...(r.status === 'ok' ? r : { status: 'warn', message: `${r.message}; ${why}` }) };
+    });
+    const mods = Object.keys(modules).sort().map((id) => {
+      const cfg = modules[id];
+      return checkRepo(cfg.repo, [cfg.manifestAsset, cfg.zipAsset], tok).then((r) => ({ kind: 'module', name: id, repo: cfg.repo, ...r }));
+    });
+    return { token, checks: await Promise.all([proxy, ...mods]) };
+  }
+
+  // The daily check: "Test setup" with the token in use. Problems are mailed to the notification recipients every day
+  // they last, and one more mail says when they are gone. lastCheck is shown on the admin page.
+  let lastCheck = null; // { at, problems }
+  let failing = false;
+  // The proxy's own repository counts only once the token has been seen to read it: many installs never give it
+  // access (no automatic updates, or an updater token of their own), and they must not get a mail every day.
+  let proxyRepoSeen = false;
+  const adminLink = adminUrl || `${base}/_admin/`;
+
+  async function mail(subject, message) {
+    if (!adminFile) return log('daily check: no admin.json, so nobody to e-mail');
+    try {
+      await notify({ 'admin-file': adminFile, subject, message }, { mailer, log: (l) => log(`daily check: ${l}`) });
+    } catch (err) {
+      log(`daily check: e-mail not sent (${err.message})`);
+    }
+  }
+
+  // Runs the check once. deferUnreachable: when GitHub could not be reached, mail nothing and report deferred
+  // (the scheduler tries again an hour later; a second miss is mailed).
+  async function runSetupCheck({ deferUnreachable = false } = {}) {
+    const result = await testSetup();
+    const problems = [];
+    if (result.token.status !== 'ok') problems.push(`GitHub token: ${result.token.message}`);
+    for (const c of result.checks) {
+      if (c.kind === 'proxy' && c.status === 'ok') proxyRepoSeen = true;
+      if (c.status === 'ok' || (c.kind === 'proxy' && !proxyRepoSeen && !c.unreachable)) continue;
+      problems.push(`${c.name} (${c.repo}): ${c.message}`);
+    }
+    const unreachable = Boolean(result.token.unreachable || result.checks.some((c) => c.unreachable));
+    lastCheck = { at: new Date().toISOString(), problems };
+    log(problems.length ? `daily check: ${problems.length} problem(s)` : 'daily check: all OK');
+    if (unreachable && deferUnreachable) return { problems, deferred: true };
+    if (problems.length) {
+      await mail('setup problems', 'The daily check of the Foundry release proxy found:\n\n' +
+        problems.map((p) => `- ${p}`).join('\n') +
+        `\n\nFoundry cannot install or update the affected modules until this is fixed. Replace the token or run ` +
+        `"Test setup" on the administration page: ${adminLink}\n`);
+    } else if (failing) {
+      await mail('setup OK again', `The daily check of the Foundry release proxy found no problems any more.\n`);
+    }
+    failing = problems.length > 0;
+    return { problems, deferred: false };
+  }
+
+  // Daily checks: the first firstDelayMs after start (an update restart is followed by one), then every intervalMs.
+  function startDailyChecks({ firstDelayMs = HOUR_MS, intervalMs = DAY_MS, retryMs = HOUR_MS } = {}) {
+    let timer = null;
+    const schedule = (ms, retry) => {
+      timer = setTimeout(async () => {
+        let next = intervalMs;
+        let isRetry = false;
+        try {
+          const r = await runSetupCheck({ deferUnreachable: !retry });
+          if (r.deferred) [next, isRetry] = [retryMs, true];
+        } catch (err) {
+          log(`daily check: failed (${err.message})`);
+        }
+        if (timer) schedule(next, isRetry);
+      }, ms);
+      timer.unref();
+    };
+    schedule(firstDelayMs, false);
+    return () => {
+      clearTimeout(timer);
+      timer = null;
+    };
+  }
+
+  const githubToken = {
+    info: () => ({ kind: tokenKind(currentToken), file: envFile || null, problem: tokenStorageProblem(), lastCheck }),
+    check: checkToken,
+    test: testSetup,
+    save(tok) {
+      const text = replaceEnvValue(fs.readFileSync(envFile, 'utf8'), 'GITHUB_TOKEN', tok);
+      if (text === null) throw new Error('no GITHUB_TOKEN line');
+      rewriteFile(envFile, text);
+      currentToken = tok;
+    },
+  };
+
   const adminPage = admin && createAdmin({
     adminFile: admin.file,
     settings: admin.settings,
@@ -187,6 +400,7 @@ function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl
       modules = parsed;
     },
     checkRelease,
+    githubToken,
   });
 
   async function route(req, res) {
@@ -270,6 +484,12 @@ function createApp({ modules, token, publicBaseUrl, configFile, admin, fetchImpl
   };
 
   const server = http.createServer(wrap(route));
+  server.runSetupCheck = runSetupCheck;
+  server.startDailyChecks = (opts) => {
+    const stop = startDailyChecks(opts);
+    server.on('close', stop);
+    return stop;
+  };
 
   // tls { cert, key }: HTTPS on the admin port, where a plain-HTTP request gets a redirect to https:// (like Webmin);
   // no tls: plain HTTP (behind a reverse proxy that does HTTPS).
@@ -339,6 +559,9 @@ function main(env = process.env) {
     const configFile = env.CONFIG_FILE || './config.json';
     // admin.json next to config.json unless ADMIN_FILE says otherwise; without a password hash the page is off.
     const adminFile = env.ADMIN_FILE || path.join(path.dirname(configFile), 'admin.json');
+    // The env file the token comes from (the installers put it next to config.json); the admin page rewrites its
+    // GITHUB_TOKEN line when the token is changed there.
+    const envFile = env.ENV_FILE || path.join(path.dirname(configFile), 'env');
     let adminSettings;
     try {
       adminSettings = loadAdminSettings(adminFile);
@@ -382,11 +605,16 @@ function main(env = process.env) {
     if (adminOn && adminPort && !tlsOff) tls = adminTls(env, configFile, hosts);
 
     const admin = adminOn ? { file: adminFile, settings: adminSettings, hosts, trustProxy } : undefined;
-    const server = createApp({ modules, token, publicBaseUrl, configFile, admin });
+    const adminUrl = env.ADMIN_PUBLIC_URL ? `${env.ADMIN_PUBLIC_URL.replace(/\/+$/, '')}/_admin/` : undefined;
+    const server = createApp({ modules, token, publicBaseUrl, configFile, envFile, adminFile, adminUrl, admin });
+    // DAILY_CHECK=off: no daily "Test setup" and no problem e-mails.
+    const dailyCheck = !/^(off|0|false|no)$/i.test(env.DAILY_CHECK || '');
+    if (dailyCheck) server.startDailyChecks();
     server.listen(port, host, () => {
       const ids = Object.keys(modules).join(', ') || '(none yet)';
       console.log(`listening on http://${host}:${port}, modules: ${ids}`);
       console.log(adminOn ? `admin page: ${publicBaseUrl.replace(/\/+$/, '')}/_admin/` : `admin page off (no password in ${adminFile})`);
+      console.log(dailyCheck ? 'daily check on (problems are e-mailed to the recipients in admin.json)' : 'daily check off (DAILY_CHECK)');
     });
     if (adminOn && adminPort) {
       const adminServer = server.createAdminServer(tls && tls.tls);

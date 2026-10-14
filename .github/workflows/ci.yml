@@ -137,6 +137,13 @@ jobs:
           curl -sf -b "$RUNNER_TEMP/jar" -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
             -d '{"id":"added","repo":"octo/added"}' "$api/modules" | jq -e '.modules[] | select(.id == "added")'
           sudo grep -q '"added"' /etc/foundry-release-proxy/config.json
+          # the sandbox lets the proxy rewrite env (a new GitHub token), and a token GitHub refuses changes nothing
+          curl -sf -b "$RUNNER_TEMP/jar" "$api/state" | jq -e '.token.canChange and .token.file == "/etc/foundry-release-proxy/env"'
+          before="$(sudo sha256sum /etc/foundry-release-proxy/env)"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -b "$RUNNER_TEMP/jar" -X PUT -H 'Content-Type: application/json' \
+            -H "X-CSRF-Token: $csrf" -d '{"token":"github_pat_ci_also_not_a_real_token"}' "$api/token")" = 400
+          test "$(sudo sha256sum /etc/foundry-release-proxy/env)" = "$before"
+          test "$(sudo stat -c '%a %U' /etc/foundry-release-proxy/env)" = "600 foundry-proxy"
           # the change survives a restart
           sudo systemctl restart foundry-release-proxy
           for _ in $(seq 1 15); do

@@ -23,7 +23,9 @@
 #                                                 rewrites it when modules are changed on the administration page)
 #   /etc/foundry-release-proxy/admin.json         admin page password hash + notification e-mail settings (600, owned
 #                                                 by the service user)
-#   /etc/foundry-release-proxy/env                GITHUB_TOKEN, PORT, ... (chmod 600, owned by the service user)
+#   /etc/foundry-release-proxy/env                GITHUB_TOKEN, PORT, ... (chmod 600, owned by the service user, which
+#                                                 rewrites its GITHUB_TOKEN line when the token is changed on the
+#                                                 administration page)
 #   /etc/foundry-release-proxy/admin-tls.crt/.key self-signed certificate of the admin port (root:service user, 644/640)
 #   /etc/foundry-release-proxy/auto-update.conf   auto-update on/off and which token it uses (root, 600)
 #   /etc/foundry-release-proxy/updater-token      only if the updater has its own token (root, 600)
@@ -540,8 +542,8 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
-# the admin page rewrites these two files (and nothing else under /etc)
-ReadWritePaths=-${CONF_DIR}/config.json -${CONF_DIR}/admin.json
+# the admin page rewrites these three files in place (and nothing else under /etc)
+ReadWritePaths=-${CONF_DIR}/config.json -${CONF_DIR}/admin.json -${CONF_DIR}/env
 ProtectHome=true
 PrivateTmp=true
 ${caps}

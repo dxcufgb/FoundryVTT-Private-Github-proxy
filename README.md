@@ -45,7 +45,9 @@ restart the service. An empty `{}` is only accepted while the administration pag
 
 Environment variables (see `.env.example`): `GITHUB_TOKEN` (required), `PORT` (default `8787`), `HOST` (default
 `127.0.0.1`), `PUBLIC_BASE_URL` (default `http://localhost:<PORT>`), `CONFIG_FILE`, `ADMIN_FILE` (default `admin.json`
-next to `CONFIG_FILE`), `ADMIN_HOSTS` (extra host names the admin page answers to, comma separated) and the
+next to `CONFIG_FILE`), `ENV_FILE` (the file holding `GITHUB_TOKEN`, where a token changed on the admin page is saved;
+default `env` next to `CONFIG_FILE`), `DAILY_CHECK` (`off` turns off the [daily check](#daily-check)), `ADMIN_HOSTS`
+(extra host names the admin page answers to, comma separated) and the
 [admin page in the browser](#the-admin-page-in-your-browser-like-webmin) settings (`ADMIN_PORT`, `ADMIN_HOST`,
 `ADMIN_TLS`, `ADMIN_TLS_CERT`, `ADMIN_TLS_KEY`, `ADMIN_PUBLIC_URL`, `ADMIN_TRUST_PROXY`).
 
@@ -63,9 +65,12 @@ page, mailer and updater; no network needed).
    everything else at "No access" (Metadata: read-only is added automatically).
 6. Generate and copy the `github_pat_...` token (shown once).
 
-**Rotating**: before the expiry, generate a new token the same way (or use *Regenerate token* on the existing one),
-then on the Pi `sudo nano /etc/foundry-release-proxy/env`, replace `GITHUB_TOKEN`, and
-`sudo systemctl restart foundry-release-proxy`. Delete the old token on GitHub afterwards.
+**Rotating**: before the expiry, generate a new token the same way (or use *Regenerate token* on the existing one).
+Then paste it on the [administration page](#administration-page) under **GitHub token** and press **Save token**: the
+proxy checks it with GitHub, saves it to `env` and uses it at once (**Test setup** first shows what the new token can
+read). Without the admin page: `sudo nano /etc/foundry-release-proxy/env`, replace `GITHUB_TOKEN`, and
+`sudo systemctl restart foundry-release-proxy`. Delete the old token on GitHub afterwards. The
+[daily check](#daily-check) e-mails you two weeks before the token expires and again if it lapses.
 
 ## 2. Install on Linux (Raspberry Pi)
 
@@ -278,8 +283,17 @@ What it does:
   why there is none: no release, or the token cannot see the repository) and **Copy link** (the manifest URL to paste
   into Foundry's *Install Module*). Changes are checked with the same rules as `config.json`, written to it and used
   at once, without a restart. Remember to add a new repository to the token's repository access as well.
-- **Update notifications**: the e-mail addresses that hear about automatic updates (see below), the SMTP server that
-  sends them, and **Send test e-mail**. The SMTP password is never shown again; leave the field empty to keep it.
+- **GitHub token**: what kind of token is in use (never the token itself), a field for a new one, **Save token** and
+  **Test setup**. Saving first asks GitHub whether it accepts the token (a mistyped or revoked one is refused and
+  nothing changes), then rewrites the `GITHUB_TOKEN` line of `env` in place and switches the proxy over without a
+  restart; automatic updates that use the proxy's token pick it up from there too. **Test setup** checks the token
+  (whose it is, when it expires) and then every repository: this proxy's own repository (needed for automatic updates
+  unless they have their own updater token) and each module's (can the token see it, is there a published release,
+  does it have the manifest and zip assets). With a token in the field it tests that one without saving it. The line
+  below shows the result of the last [daily check](#daily-check).
+- **Notifications**: the e-mail addresses that hear about automatic updates and daily-check problems (see below), the
+  SMTP server that sends them, and **Send test e-mail**. The SMTP password is never shown again; leave the field empty
+  to keep it.
 - **Admin password**: change it (needs the current one; every other session is logged out).
 
 **Access.** On the machine itself the page is at `http://localhost:8787/_admin/` (the proxy's own port, which listens
@@ -296,9 +310,11 @@ Content-Security-Policy and is never cached. The GitHub token is never shown on 
 **Settings file.** `admin.json` next to `config.json` (`/etc/foundry-release-proxy/admin.json`,
 `C:\ProgramData\FoundryReleaseProxy\admin.json`) holds the password hash and the notification settings, including the
 SMTP password. Like `env` it is readable only by the proxy's account (Linux: owned by `foundry-proxy`, mode `600`;
-Windows: Administrators, SYSTEM and LOCAL SERVICE). The proxy's account may rewrite `config.json` and `admin.json` in
-place, but cannot create or delete files in the settings folder; on Linux the systemd unit allows writes to exactly
-these two files. Re-running the installer never overwrites `admin.json`; `--set-notify` (`-SetNotify`) re-enters the
+Windows: Administrators, SYSTEM and LOCAL SERVICE). The proxy's account may rewrite `config.json`, `admin.json` and
+`env` (only its `GITHUB_TOKEN` line, with a value of letters, digits and `_`) in place, but cannot create or delete
+files in the settings folder; on Linux the systemd unit allows writes to exactly these three files. Installs from
+before this version get that permission for `env` when the installer runs again (an automatic update does it); until
+then the page says the token cannot be changed there. Re-running the installer never overwrites `admin.json`; `--set-notify` (`-SetNotify`) re-enters the
 e-mail settings from the command line.
 
 ### The admin page in your browser (like Webmin)
@@ -400,12 +416,31 @@ systemctl restart foundry-release-proxy
 On the internet, use a long password (a passphrase of 16+ characters), keep automatic updates on, and if you can,
 limit who may connect (e.g. `allow`/`deny` in the nginx server block, or your router).
 
+## Daily check
+
+Once a day (the first time an hour after the proxy starts) the proxy runs the same checks as **Test setup** on the
+admin page with the token in use. When something is wrong it e-mails the [notification](#update-notifications-by-e-mail)
+recipients in `admin.json`, every day until it is fixed, and once more when everything is fine again:
+
+- GitHub no longer accepts the token (expired, revoked), or it expires within 14 days;
+- the token can no longer see this proxy's own repository, which automatic updates read with it (only once it has been
+  seen to read it since the proxy started: an install whose token was never given that repository, because automatic
+  updates are off or have their own updater token, gets no e-mail about it; **Test setup** still shows it);
+- the token cannot see a module repository, or its latest release is missing or lacks the manifest or zip asset.
+
+Subject `Foundry release proxy (<host name>): setup problems` (or `...: setup OK again`), with the problems and the
+link to the admin page (`ADMIN_PUBLIC_URL` when set, else `PUBLIC_BASE_URL`) in the body. When GitHub cannot be
+reached at all, the proxy tries again an hour later and only e-mails if that fails too. Each run writes one line to the
+proxy's log (`daily check: all OK` or `daily check: N problem(s)`). The check runs whether or not the admin page is on;
+without recipients it only logs. `DAILY_CHECK=off` in `env` turns it off.
+
 ## Update notifications by e-mail
 
 When automatic updates are on, every run that **installs a new version** or **fails** (check failed, bad download,
 rolled back) sends an e-mail to each address in `admin.json`: subject `Foundry release proxy (<host name>): updated to
 X.Y.Z` or `...: automatic update failed`, with the details in the body. No addresses = no e-mails. A failure to send is
 only logged and never changes the outcome of the update. (A failing check e-mails you every day until it is fixed.)
+The same addresses get the [daily check](#daily-check)'s e-mails.
 
 Set the addresses and the mail server while installing (the installer asks after the admin password; the Windows
 installer has a page for it), on the administration page, or with `--set-notify` / `-SetNotify`. Unattended installs
@@ -473,8 +508,9 @@ The one-line Linux installer exports the token it downloaded the release with as
 can read this repository, so when you turn automatic updates on, `install.sh` stores it as the updater token (asking
 first when interactive; with `--yes` it does so without asking). An updater token that is already configured is kept.
 
-The token is only sent to `api.github.com` and is never logged. When it expires, update `env` (or `updater-token`); a
-failing check shows up in the update log as `HTTP 401`/`HTTP 404`.
+The token is only sent to `api.github.com` and is never logged. When it expires, save a new one on the admin page (it
+goes into `env`), or update `updater-token` if the updater has its own; a failing check shows up in the update log as
+`HTTP 401`/`HTTP 404`, and the [daily check](#daily-check) warns about the proxy's token before it lapses.
 
 **Limits.** The checksum guards against corrupted or truncated downloads; it comes from the same release, so it does
 not protect against someone who can publish releases in this repository. Updates restart the proxy (a few seconds of
@@ -578,6 +614,7 @@ are on.
 - `404` for a module that exists: the repo has no published (non-draft, non-prerelease) release, the release lacks the
   assets, or the token has no access to that repo.
 - `502`: GitHub rejected the request; the log line shows the module id and status (`401` expired/invalid token).
+  **Test setup** on the admin page shows which part fails; replace an expired token there with **Save token**.
 - `/_admin/` answers `404`: the page has no password yet (`--set-admin-password`). `403 unknown host name`: the name
   in the address bar is not one of this machine's names or addresses; set it as `ADMIN_PUBLIC_URL` or add it to
   `ADMIN_HOSTS` in `env`.

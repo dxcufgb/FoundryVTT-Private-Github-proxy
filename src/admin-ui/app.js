@@ -91,7 +91,80 @@
   function render(data) {
     state = data;
     renderModules();
+    renderToken();
     renderNotify();
+  }
+
+  function renderToken() {
+    const t = state.token;
+    const status = $('#token-status');
+    status.className = t.canChange ? '' : 'error';
+    status.textContent = t.canChange
+      ? `In use: a ${t.kind}. A new one is saved to ${t.file}.`
+      : `In use: a ${t.kind || 'GitHub token'}. It cannot be changed here: ${t.file ? `${t.file}: ` : ''}${t.problem}`;
+    $('#token-save').disabled = !t.canChange;
+    const daily = $('#daily-check');
+    const c = t.lastCheck;
+    daily.className = c && c.problems.length ? 'hint error' : 'hint';
+    daily.textContent = !c
+      ? 'Daily check: not run yet (the first runs an hour after the proxy starts).'
+      : `Daily check ${new Date(c.at).toLocaleString()}: ` +
+        (c.problems.length ? `${c.problems.length} problem(s), e-mailed to the recipients below: ${c.problems.join('; ')}` : 'all OK.');
+  }
+
+  const MARK = { ok: '✓', warn: '!', bad: '✗' };
+
+  function showResults(r) {
+    const list = $('#setup-results');
+    list.replaceChildren();
+    const line = (status, title, message) => el('li', { class: status }, [
+      el('span', { class: 'mark', 'aria-hidden': 'true', text: MARK[status] || '?' }),
+      el('strong', { text: title }),
+      el('span', { text: ` ${message}` }),
+    ]);
+    list.append(line(r.token.status, r.tested === 'typed' ? 'Typed token:' : 'Token in use:', r.token.message));
+    if (r.token.status === 'bad') {
+      list.append(line('bad', 'Repositories:', 'not checked, GitHub did not accept the token.'));
+    }
+    for (const c of r.checks) {
+      list.append(line(c.status, `${c.name} (${c.repo}):`, c.message));
+    }
+    list.hidden = false;
+  }
+
+  async function testSetup(e) {
+    const button = e.currentTarget;
+    button.disabled = true;
+    const list = $('#setup-results');
+    list.replaceChildren(el('li', { text: 'Testing…' }));
+    list.hidden = false;
+    try {
+      const r = await call('POST', 'setup-test', { token: $('#token-form').token.value.trim() });
+      showResults(r);
+      const bad = r.token.status === 'bad' || r.checks.some((c) => c.status === 'bad');
+      toast(bad ? 'Test setup found problems (see the list).' : 'Test setup finished.', bad);
+    } catch (err) {
+      list.hidden = true;
+      toast(err.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function saveToken(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const button = $('#token-save');
+    button.disabled = true;
+    try {
+      render(await call('PUT', 'token', { token: form.token.value.trim() }));
+      form.reset();
+      toast('Token saved and in use. Delete the old one on GitHub when you no longer need it.');
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      button.disabled = !state.token.canChange;
+    }
   }
 
   function renderModules() {
@@ -323,6 +396,8 @@
     $('#add-module').addEventListener('click', () => openModule(null));
     $('#module-form').addEventListener('submit', saveModule);
     $('#module-cancel').addEventListener('click', () => $('#module-dialog').close());
+    $('#token-form').addEventListener('submit', saveToken);
+    $('#setup-test').addEventListener('click', testSetup);
     $('#notify-form').addEventListener('submit', saveNotify);
     $('#notify-test').addEventListener('click', testNotify);
     $('#recipient-add').addEventListener('click', addRecipient);

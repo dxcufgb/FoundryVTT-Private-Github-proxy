@@ -24,7 +24,8 @@ Layout (config.json and env are created once and never overwritten):
   C:\ProgramData\FoundryReleaseProxy\config.json     module id -> repo mapping (LOCAL SERVICE may rewrite it: admin page)
   C:\ProgramData\FoundryReleaseProxy\admin.json      admin page password hash + notification e-mail settings
                                                     (Administrators/SYSTEM + LOCAL SERVICE read/write)
-  C:\ProgramData\FoundryReleaseProxy\env             GITHUB_TOKEN, PORT, ... (Administrators/SYSTEM + LOCAL SERVICE read)
+  C:\ProgramData\FoundryReleaseProxy\env             GITHUB_TOKEN, PORT, ... (Administrators/SYSTEM + LOCAL SERVICE read/write:
+                                                    the admin page rewrites its GITHUB_TOKEN line)
   C:\ProgramData\FoundryReleaseProxy\admin-tls.crt/.key  self-signed certificate of the admin port
   C:\ProgramData\FoundryReleaseProxy\logs\proxy.log  proxy log
   C:\ProgramData\FoundryReleaseProxy\auto-update.conf, auto-update.log, updater-token (Administrators/SYSTEM only)
@@ -123,12 +124,12 @@ function Protect-AdminFile([string]$Path) {
     Protect-Path $Path @("*${SidAdmins}:F", "*${SidSystem}:F")
 }
 
-# Files the proxy (LOCAL SERVICE) must read: config.json and env.
+# Files the proxy (LOCAL SERVICE) must only read: the admin port's certificate and key.
 function Protect-ProxyFile([string]$Path) {
     Protect-Path $Path @("*${SidAdmins}:F", "*${SidSystem}:F", "*${SidLocalService}:R")
 }
 
-# Files the proxy (LOCAL SERVICE) reads and rewrites in place from the admin page: config.json and admin.json.
+# Files the proxy (LOCAL SERVICE) reads and rewrites in place from the admin page: config.json, admin.json and env.
 # (R,W) and no DELETE: it cannot remove or replace them, and it cannot create files in the data folder.
 function Protect-ProxyWritableFile([string]$Path) {
     Protect-Path $Path @("*${SidAdmins}:F", "*${SidSystem}:F", "*${SidLocalService}:(R,W)")
@@ -505,7 +506,7 @@ if ($EnableAutoUpdate -or $DisableAutoUpdate) {
     exit 0
 }
 
-# Data folder: Administrators and SYSTEM only; LOCAL SERVICE may list it and reads config.json and env.
+# Data folder: Administrators and SYSTEM only; LOCAL SERVICE may list it (and rewrite config.json, admin.json, env).
 if (-not (Test-Path -LiteralPath $DataDir)) { New-Item -ItemType Directory -Path $DataDir | Out-Null }
 Protect-Path $DataDir @("*${SidAdmins}:(OI)(CI)F", "*${SidSystem}:(OI)(CI)F", "*${SidLocalService}:RX")
 if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
@@ -543,12 +544,12 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
         if ($entered) { $token = $entered }
     }
     Write-TextFile $EnvFile ''
-    Protect-ProxyFile $EnvFile
+    Protect-ProxyWritableFile $EnvFile
     Write-TextFile $EnvFile ("GITHUB_TOKEN=$token`r`nCONFIG_FILE=$ConfigFile`r`nHOST=127.0.0.1`r`n" +
         "PORT=8787`r`nPUBLIC_BASE_URL=http://localhost:8787`r`n")
     Write-ProxyLog "Wrote $EnvFile."
 }
-Protect-ProxyFile $EnvFile
+Protect-ProxyWritableFile $EnvFile
 
 # A new admin page: offer it to the browsers of other computers (like Webmin), once.
 if ($adminNew -and -not (Get-EnvValue 'ADMIN_PORT') -and (Test-AdminOn $node)) {

@@ -320,6 +320,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  REPO,
   createUpdater,
   compareVersions,
   parseVersion,

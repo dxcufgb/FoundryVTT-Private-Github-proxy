@@ -23,7 +23,11 @@
 #                                                 rewrites it when modules are changed on the administration page)
 #   /etc/foundry-release-proxy/admin.json         admin page password hash + notification e-mail settings (600, owned
 #                                                 by the service user)
-#   /etc/foundry-release-proxy/env                GITHUB_TOKEN, PORT, ... (chmod 600, owned by the service user)
+#   /etc/foundry-release-proxy/env                GITHUB_TOKEN, PORT, ... (chmod 600, owned by the service user, which
+#                                                 rewrites its GITHUB_TOKEN line when the token is changed on the
+#                                                 administration page)
+#   /etc/foundry-release-proxy/update-request     "Update proxy now" on the admin page: the service user rewrites it, a
+#                                                 systemd path unit then starts the root update (root never reads it)
 #   /etc/foundry-release-proxy/admin-tls.crt/.key self-signed certificate of the admin port (root:service user, 644/640)
 #   /etc/foundry-release-proxy/auto-update.conf   auto-update on/off and which token it uses (root, 600)
 #   /etc/foundry-release-proxy/updater-token      only if the updater has its own token (root, 600)
@@ -44,6 +48,9 @@ CONF_DIR="${CONF_DIR:-/etc/${SERVICE_NAME}}"
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 UPDATE_UNIT="/etc/systemd/system/${SERVICE_NAME}-update.service"
 UPDATE_TIMER="/etc/systemd/system/${SERVICE_NAME}-update.timer"
+UPDATE_NOW_UNIT="/etc/systemd/system/${SERVICE_NAME}-update-now.service"
+UPDATE_NOW_PATH="/etc/systemd/system/${SERVICE_NAME}-update-now.path"
+UPDATE_REQUEST="$CONF_DIR/update-request"
 AUTO_CONF="$CONF_DIR/auto-update.conf"
 UPDATER_TOKEN_FILE="$CONF_DIR/updater-token"
 UPDATE_REPO="dxcufgb/FoundryVTT-Private-Github-proxy"
@@ -164,8 +171,15 @@ remove_updater_units() {
     rm -f "$UPDATE_UNIT" "$UPDATE_TIMER"
 }
 
+# Stop the "Update proxy now" watcher and remove its units and request file.
+remove_update_now_units() {
+    systemctl disable --now "${SERVICE_NAME}-update-now.path" 2>/dev/null || true
+    rm -f "$UPDATE_NOW_PATH" "$UPDATE_NOW_UNIT" "$UPDATE_REQUEST"
+}
+
 if [[ "$action" == uninstall ]]; then
     remove_updater_units
+    remove_update_now_units
     systemctl disable --now "$SERVICE_NAME" 2>/dev/null || true
     rm -f "$UNIT_FILE"
     rm -rf "$APP_DIR" "${APP_DIR}.prev"
@@ -273,13 +287,13 @@ write_auto_conf() {
     chmod 600 "$AUTO_CONF"
 }
 
-# Write hardened daily update units, reload systemd and enable the update timer.
-install_updater_units() {
+# Write the hardened oneshot unit $1 (description $2) that runs the updater (auto-update.sh --apply) as root.
+write_update_service() {
     local parent
     parent="$(dirname "$APP_DIR")"
-    cat > "$UPDATE_UNIT" <<UNIT
+    cat > "$1" <<UNIT
 [Unit]
-Description=Update ${SERVICE_NAME} from its latest GitHub release
+Description=$2
 Wants=network-online.target
 After=network-online.target
 
@@ -305,6 +319,12 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 UNIT
+    chmod 644 "$1"  # explicit: root's umask may be strict
+}
+
+# Write hardened daily update units, reload systemd and enable the update timer.
+install_updater_units() {
+    write_update_service "$UPDATE_UNIT" "Update ${SERVICE_NAME} from its latest GitHub release"
     cat > "$UPDATE_TIMER" <<UNIT
 [Unit]
 Description=Daily update check for ${SERVICE_NAME}
@@ -320,6 +340,35 @@ UNIT
     chmod 644 "$UPDATE_UNIT" "$UPDATE_TIMER"  # explicit: root's umask may be strict
     systemctl daemon-reload
     systemctl enable --now "${SERVICE_NAME}-update.timer" >/dev/null
+}
+
+# "Update proxy now" on the admin page, whether or not daily updates are on: the proxy may rewrite $UPDATE_REQUEST
+# (and no other new file); a change starts the same root update run as the daily timer. Root never reads the file,
+# and nothing the proxy writes reaches the update: it only says "run now".
+install_update_now_units() {
+    # paused while the file is (re)made: creating it or changing its owner would count as a request
+    systemctl stop "${SERVICE_NAME}-update-now.path" 2>/dev/null || true
+    if [[ ! -f "$UPDATE_REQUEST" || -L "$UPDATE_REQUEST" ]]; then
+        rm -f "$UPDATE_REQUEST"
+        (umask 077 && : > "$UPDATE_REQUEST")
+    fi
+    chown "$SERVICE_USER:$SERVICE_USER" "$UPDATE_REQUEST"
+    chmod 600 "$UPDATE_REQUEST"
+    write_update_service "$UPDATE_NOW_UNIT" "Update ${SERVICE_NAME} now (requested on its admin page)"
+    cat > "$UPDATE_NOW_PATH" <<UNIT
+[Unit]
+Description=Start ${SERVICE_NAME}-update-now when the admin page asks for an update
+
+[Path]
+PathChanged=${UPDATE_REQUEST}
+Unit=${SERVICE_NAME}-update-now.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    chmod 644 "$UPDATE_NOW_PATH"
+    systemctl daemon-reload
+    systemctl enable --now "${SERVICE_NAME}-update-now.path" >/dev/null
 }
 
 # Save the token choice, enable daily updates and check access unless upgrading unattended.
@@ -540,8 +589,8 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
-# the admin page rewrites these two files (and nothing else under /etc)
-ReadWritePaths=-${CONF_DIR}/config.json -${CONF_DIR}/admin.json
+# the admin page rewrites these four files in place (and nothing else under /etc)
+ReadWritePaths=-${CONF_DIR}/config.json -${CONF_DIR}/admin.json -${CONF_DIR}/env -${CONF_DIR}/update-request
 ProtectHome=true
 PrivateTmp=true
 ${caps}
@@ -707,6 +756,7 @@ fi
 # The certificate of an admin port that was turned on by hand.
 if [[ -n "$(env_value ADMIN_PORT)" && ! "$(env_value ADMIN_TLS)" =~ ^(off|0|false|no)$ ]]; then make_admin_cert; fi
 
+install_update_now_units
 write_unit
 
 systemctl daemon-reload

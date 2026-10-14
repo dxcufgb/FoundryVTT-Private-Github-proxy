@@ -8,6 +8,7 @@
   --accent-text: #ffffff;
   --danger: #b42318;
   --ok: #157f3c;
+  --warn: #9a5b00;
   --chip: #e8edf9;
   color-scheme: light;
 }
@@ -22,6 +23,7 @@
     --accent-text: #0e1320;
     --danger: #f0786c;
     --ok: #5ccf86;
+    --warn: #e8b04a;
     --chip: #28324a;
     color-scheme: dark;
   }
@@ -114,6 +116,13 @@ td .status.good { color: var(--ok); }
 .chips li button { padding: 0 8px; border: none; background: transparent; color: var(--muted); font-size: 1.1em; }
 .chips .empty { background: none; padding: 4px 0; }
 .error { color: var(--danger); }
+.results { list-style: none; padding: 0; margin: 16px 0 0; }
+.results li { padding: 6px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.results .mark { display: inline-block; width: 1.4em; font-weight: 700; }
+.results .ok .mark { color: var(--ok); }
+.results .warn .mark { color: var(--warn); }
+.results .bad .mark { color: var(--danger); }
+#token-status { margin: 0 0 12px; }
 #toast {
   position: fixed;
   right: 20px;

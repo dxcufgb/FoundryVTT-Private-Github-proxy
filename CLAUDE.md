@@ -8,15 +8,24 @@ systemd service on a Raspberry Pi next to Foundry, or as a Windows scheduled tas
 installs new releases of the proxy itself.
 
 ## Layout
-- `src/server.js` – the HTTP proxy (everything except self-update). Exports `createApp`, `loadConfig`, `parseConfig`, `ConfigError`;
+- `src/server.js` – the HTTP proxy (everything except self-update), the GitHub side of the token change and "Test setup",
+  and the daily check (`startDailyChecks`, off with `DAILY_CHECK=off`): "Test setup" an hour after start and then
+  daily; problems are mailed through `notify.js` to the `admin.json` recipients every day they last, plus one "OK again"
+  mail; an unreachable GitHub is retried an hour later before it is mailed. Exports `createApp`, `loadConfig`, `parseConfig`, `ConfigError`;
   `main()` only runs when executed directly. Hands `/_admin` to `src/admin.js` when the admin page is on. With
   `ADMIN_PORT` it also opens the browser admin port (`server.createAdminServer(tls)`): only admin routes, HTTPS (a TLS
   first byte goes to https, anything else gets a 301 to https://), `/` → `/_admin/`.
 - `src/selfsigned.js` – ECDSA P-256 self-signed X.509 certificate built with `node:crypto` (DER by hand); CLI writes
   `admin-tls.crt`/`.key` for the installers.
 - `src/admin.js` – the password-protected admin page (`/_admin/`, UI files in `src/admin-ui/`): JSON API to list/add/edit/
-  delete modules (validated with `parseConfig`, written back to `config.json` in place), notification settings, password
-  change. Settings in `admin.json` (`ADMIN_FILE`, default next to `CONFIG_FILE`): scrypt `passwordHash` + `notify`
+  delete modules (validated with `parseConfig`, written back to `config.json` in place), the GitHub token (`PUT
+  /api/token`: format check, GitHub must accept it, then the `GITHUB_TOKEN` line of `env` (`ENV_FILE`, default next to
+  `CONFIG_FILE`) is rewritten in place and the proxy switches over; `POST /api/setup-test`: the token, the proxy's own
+  repo and every module repo, with the typed token or the one in use), "Update proxy now" (`GET /api/update`: installed and
+  latest version; `POST /api/update`, at most every 2 minutes: asks the root/SYSTEM updater to run through the injected
+  `updateTrigger`: Linux `fileUpdateTrigger` rewrites `update-request`, which the installer's systemd path unit
+  `foundry-release-proxy-update-now.path` watches; Windows `taskUpdateTrigger` runs the SYSTEM task
+  `FoundryReleaseProxy-UpdateNow` with `schtasks /Run`), notification settings, password change. Settings in `admin.json` (`ADMIN_FILE`, default next to `CONFIG_FILE`): scrypt `passwordHash` + `notify`
   (recipients, SMTP). Off (404) without a password hash. CLI: `setup FILE` (installers; secrets via `FOUNDRY_PROXY_*` env),
   `check FILE`.
 - `src/mailer.js` – minimal SMTP client (STARTTLS / TLS / plain relay, AUTH PLAIN/LOGIN only over TLS). `src/notify.js` –
@@ -105,15 +114,23 @@ installs new releases of the proxy itself.
 - **Admin page**: every API call but login needs the session cookie (HttpOnly, SameSite=Strict, Path=/_admin); every
   change also the `X-CSRF-Token` and `Content-Type: application/json`; unknown `Host`/`Origin` → 403 (DNS rebinding).
   Login lockout after 5 failures. Strict CSP (no inline script/style: the UI only uses `textContent`). Neither the GitHub
-  token, the password hash nor the SMTP password may appear in a response or a log line (tested).
+  token (old, new or only tested), the password hash nor the SMTP password may appear in a response, a log line or a
+  daily-check e-mail (tested). A new token must match `TOKEN_RE` (letters, digits, `_`) before it is written, so it can
+  never add a line to `env`; never loosen that. The token API never answers 401 (the UI reads 401 as "logged out").
 - **Admin port**: never serves module routes (they have no auth). Host allowlist = localhost, this machine's names and
   interface addresses, `PUBLIC_BASE_URL`/`ADMIN_PUBLIC_URL` hosts, `ADMIN_HOSTS`. `X-Forwarded-*` only from a peer that
   `ADMIN_TRUST_PROXY` names (`1` = loopback, or a list of IPs); anyone else could fake them past the lockout. No HSTS (self-signed certificates would become un-bypassable). The certificate files are
   root-owned, readable by the service. Installers only change `ADMIN_*` lines in `env` on an explicit option
   (`--admin-web`, `-AdminWeb`, first-install prompt).
-- The proxy's account may rewrite `config.json`/`admin.json` in place but never create files in the settings folder
-  (Linux: files owned by the service user, `ReadWritePaths=` exactly these two; Windows: LOCAL SERVICE `(R,W)`, no
-  delete). Root never parses `admin.json`: `auto-update.sh` runs `notify.js` as the service user via `setpriv`.
+- The proxy's account may rewrite `config.json`/`admin.json`/`env` (only its `GITHUB_TOKEN` line) and, on Linux, the
+  empty `update-request` in place but never create files in the settings folder (Linux: files owned by the service
+  user, `ReadWritePaths=` exactly these four; Windows: LOCAL SERVICE `(R,W)`, no delete).
+- **Update proxy now** may only *request* the existing root/SYSTEM update run (`auto-update.sh --apply` /
+  `auto-update.ps1 -Apply`, the same checks as the daily one); nothing the proxy writes or sends may reach that run:
+  root never reads `update-request` (the path unit only reacts to the change), the Windows task takes no arguments and
+  LOCAL SERVICE has only read+run (`GRGX`) on it. The installer pauses the path unit while it (re)makes the file, so an
+  install never counts as a request. Uninstall removes the units/task and the file. Root/SYSTEM read `env` as text only (`env_value`, `Get-EnvValue`,
+  `parseTokenFile`), never source it, and validate every value they use from it. Root never parses `admin.json`: `auto-update.sh` runs `notify.js` as the service user via `setpriv`.
 - GitHub's 404 for a repo the token cannot see must stay a 404, not a 502.
 - Installer: re-running it must never overwrite `/etc/foundry-release-proxy/config.json`, `admin.json` or
   `env`; `env` stays mode 600 owned by the service user; keep the systemd hardening and keep the

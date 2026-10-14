@@ -24,13 +24,15 @@ Layout (config.json and env are created once and never overwritten):
   C:\ProgramData\FoundryReleaseProxy\config.json     module id -> repo mapping (LOCAL SERVICE may rewrite it: admin page)
   C:\ProgramData\FoundryReleaseProxy\admin.json      admin page password hash + notification e-mail settings
                                                     (Administrators/SYSTEM + LOCAL SERVICE read/write)
-  C:\ProgramData\FoundryReleaseProxy\env             GITHUB_TOKEN, PORT, ... (Administrators/SYSTEM + LOCAL SERVICE read)
+  C:\ProgramData\FoundryReleaseProxy\env             GITHUB_TOKEN, PORT, ... (Administrators/SYSTEM + LOCAL SERVICE read/write:
+                                                    the admin page rewrites its GITHUB_TOKEN line)
   C:\ProgramData\FoundryReleaseProxy\admin-tls.crt/.key  self-signed certificate of the admin port
   C:\ProgramData\FoundryReleaseProxy\logs\proxy.log  proxy log
   C:\ProgramData\FoundryReleaseProxy\auto-update.conf, auto-update.log, updater-token (Administrators/SYSTEM only)
 
 The proxy runs as the scheduled task "FoundryReleaseProxy" under LOCAL SERVICE (node --env-file, Node.js >= 20.6).
-The updater runs daily (random delay) as the task "FoundryReleaseProxy-Update" under SYSTEM.
+The updater runs daily (random delay) as the task "FoundryReleaseProxy-Update" under SYSTEM. "Update proxy now" on the
+admin page starts the task "FoundryReleaseProxy-UpdateNow" (SYSTEM, no schedule; LOCAL SERVICE may only run it).
 Tokens come from a hidden prompt or the FOUNDRY_PROXY_GITHUB_TOKEN / UPDATER_GITHUB_TOKEN environment variables,
 never from the command line. The same goes for the admin page password (FOUNDRY_PROXY_ADMIN_PASSWORD) and the
 notification settings (FOUNDRY_PROXY_NOTIFY_EMAILS, FOUNDRY_PROXY_SMTP_HOST, _PORT, _SECURITY, _USER, _PASSWORD, _FROM).
@@ -75,6 +77,7 @@ $AutoConf = Join-Path $DataDir 'auto-update.conf'
 $UpdaterTokenFile = Join-Path $DataDir 'updater-token'
 $TaskName = $AppName
 $UpdateTaskName = "$AppName-Update"
+$UpdateNowTaskName = "$AppName-UpdateNow"
 $UpdateRepo = 'dxcufgb/FoundryVTT-Private-Github-proxy'
 $SrcDir = Split-Path -Parent $PSScriptRoot
 $Utf8 = New-Object System.Text.UTF8Encoding $false
@@ -123,12 +126,12 @@ function Protect-AdminFile([string]$Path) {
     Protect-Path $Path @("*${SidAdmins}:F", "*${SidSystem}:F")
 }
 
-# Files the proxy (LOCAL SERVICE) must read: config.json and env.
+# Files the proxy (LOCAL SERVICE) must only read: the admin port's certificate and key.
 function Protect-ProxyFile([string]$Path) {
     Protect-Path $Path @("*${SidAdmins}:F", "*${SidSystem}:F", "*${SidLocalService}:R")
 }
 
-# Files the proxy (LOCAL SERVICE) reads and rewrites in place from the admin page: config.json and admin.json.
+# Files the proxy (LOCAL SERVICE) reads and rewrites in place from the admin page: config.json, admin.json and env.
 # (R,W) and no DELETE: it cannot remove or replace them, and it cannot create files in the data folder.
 function Protect-ProxyWritableFile([string]$Path) {
     Protect-Path $Path @("*${SidAdmins}:F", "*${SidSystem}:F", "*${SidLocalService}:(R,W)")
@@ -370,6 +373,30 @@ function Unregister-UpdaterTask {
     }
 }
 
+# "Update proxy now" on the admin page: a SYSTEM task without a schedule that runs the same update as the daily task,
+# whether or not daily updates are on. LOCAL SERVICE (the proxy) may read and run it, not change it; a run takes no
+# arguments, so the proxy can only say "run now".
+function Register-UpdateNowTask {
+    $script = Join-Path $AppDir 'scripts\auto-update.ps1'
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -WorkingDirectory $DataDir `
+        -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$script`" -Apply"
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+    $principal = New-ScheduledTaskPrincipal -UserId (Get-AccountName $SidSystem) -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName $UpdateNowTaskName -Action $action -Settings $settings -Principal $principal `
+        -Description "Update the Foundry release proxy now (from its admin page)" -Force | Out-Null
+    $scheduler = New-Object -ComObject 'Schedule.Service'
+    $scheduler.Connect()
+    $task = $scheduler.GetFolder('\').GetTask($UpdateNowTaskName)
+    $task.SetSecurityDescriptor("D:(A;;FA;;;$SidAdmins)(A;;FA;;;$SidSystem)(A;;GRGX;;;$SidLocalService)", 0)
+}
+
+function Unregister-UpdateNowTask {
+    if (Get-ScheduledTask -TaskName $UpdateNowTaskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $UpdateNowTaskName -Confirm:$false
+    }
+}
+
 function Invoke-Updater([string]$Mode) {
     $script = Join-Path $AppDir 'scripts\auto-update.ps1'
     if (-not (Test-Path -LiteralPath $script)) { throw "$AppDir has no updater; install this version first." }
@@ -451,6 +478,7 @@ if (-not (Test-Admin)) {
 
 if ($Uninstall) {
     Unregister-UpdaterTask
+    Unregister-UpdateNowTask
     Invoke-ProxyShutdown
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
@@ -505,7 +533,7 @@ if ($EnableAutoUpdate -or $DisableAutoUpdate) {
     exit 0
 }
 
-# Data folder: Administrators and SYSTEM only; LOCAL SERVICE may list it and reads config.json and env.
+# Data folder: Administrators and SYSTEM only; LOCAL SERVICE may list it (and rewrite config.json, admin.json, env).
 if (-not (Test-Path -LiteralPath $DataDir)) { New-Item -ItemType Directory -Path $DataDir | Out-Null }
 Protect-Path $DataDir @("*${SidAdmins}:(OI)(CI)F", "*${SidSystem}:(OI)(CI)F", "*${SidLocalService}:RX")
 if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
@@ -543,12 +571,12 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
         if ($entered) { $token = $entered }
     }
     Write-TextFile $EnvFile ''
-    Protect-ProxyFile $EnvFile
+    Protect-ProxyWritableFile $EnvFile
     Write-TextFile $EnvFile ("GITHUB_TOKEN=$token`r`nCONFIG_FILE=$ConfigFile`r`nHOST=127.0.0.1`r`n" +
         "PORT=8787`r`nPUBLIC_BASE_URL=http://localhost:8787`r`n")
     Write-ProxyLog "Wrote $EnvFile."
 }
-Protect-ProxyFile $EnvFile
+Protect-ProxyWritableFile $EnvFile
 
 # A new admin page: offer it to the browsers of other computers (like Webmin), once.
 if ($adminNew -and -not (Get-EnvValue 'ADMIN_PORT') -and (Test-AdminOn $node)) {
@@ -582,6 +610,7 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatt
 $principal = New-ScheduledTaskPrincipal -UserId (Get-AccountName $SidLocalService) -LogonType ServiceAccount -RunLevel Limited
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal `
     -Description 'Foundry VTT private-release proxy' -Force | Out-Null
+Register-UpdateNowTask
 
 $placeholder = [IO.File]::ReadAllLines($EnvFile) | Where-Object { $_ -eq 'GITHUB_TOKEN=REPLACE_ME' }
 if ($placeholder) {

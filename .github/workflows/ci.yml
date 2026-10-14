@@ -137,6 +137,26 @@ jobs:
           curl -sf -b "$RUNNER_TEMP/jar" -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
             -d '{"id":"added","repo":"octo/added"}' "$api/modules" | jq -e '.modules[] | select(.id == "added")'
           sudo grep -q '"added"' /etc/foundry-release-proxy/config.json
+          # the sandbox lets the proxy rewrite env (a new GitHub token), and a token GitHub refuses changes nothing
+          curl -sf -b "$RUNNER_TEMP/jar" "$api/state" | jq -e '.token.canChange and .token.file == "/etc/foundry-release-proxy/env"'
+          before="$(sudo sha256sum /etc/foundry-release-proxy/env)"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -b "$RUNNER_TEMP/jar" -X PUT -H 'Content-Type: application/json' \
+            -H "X-CSRF-Token: $csrf" -d '{"token":"github_pat_ci_also_not_a_real_token"}' "$api/token")" = 400
+          test "$(sudo sha256sum /etc/foundry-release-proxy/env)" = "$before"
+          test "$(sudo stat -c '%a %U' /etc/foundry-release-proxy/env)" = "600 foundry-proxy"
+          # "Update proxy now": the request file starts the root update service through the path unit (the update
+          # itself fails here: the token is fake)
+          systemctl is-active foundry-release-proxy-update-now.path
+          test "$(sudo stat -c '%a %U' /etc/foundry-release-proxy/update-request)" = "600 foundry-proxy"
+          curl -sf -b "$RUNNER_TEMP/jar" "$api/update" | jq -e '.canUpdate and .installed != null'
+          test "$(curl -s -o /dev/null -w '%{http_code}' -b "$RUNNER_TEMP/jar" -X POST -H 'Content-Type: application/json' \
+            -H "X-CSRF-Token: $csrf" -d '{}' "$api/update")" = 202
+          ran=no
+          for _ in $(seq 1 30); do
+            if sudo journalctl -u foundry-release-proxy-update-now --no-pager | grep -q 'auto-update:'; then ran=yes; break; fi
+            sleep 1
+          done
+          test "$ran" = yes
           # the change survives a restart
           sudo systemctl restart foundry-release-proxy
           for _ in $(seq 1 15); do
@@ -183,6 +203,8 @@ jobs:
           sudo ./install.sh --uninstall
           test ! -e /opt/foundry-release-proxy
           test ! -e /etc/systemd/system/foundry-release-proxy.service
+          test ! -e /etc/systemd/system/foundry-release-proxy-update-now.path
+          test ! -e /etc/foundry-release-proxy/update-request
 
       - name: Install again with a downloaded Node.js
         env:

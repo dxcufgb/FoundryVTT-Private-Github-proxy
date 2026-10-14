@@ -6,7 +6,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const net = require('node:net');
 const http = require('node:http');
-const { createApp, parseConfig } = require('../src/server.js');
+const { createApp, parseConfig, fileUpdateTrigger, taskUpdateTrigger, ConfigError } = require('../src/server.js');
 const {
   hashPassword,
   verifyPassword,
@@ -44,11 +44,22 @@ async function passwordHash() {
 }
 
 // Starts the proxy with config.json and admin.json in a temp folder; returns helpers for the admin API.
-async function start({ modules = { alpha: { repo: 'o/alpha' } }, notifySettings, fetchImpl, mailer } = {}) {
+// envText: the env file next to config.json (null = none).
+async function start({
+  modules = { alpha: { repo: 'o/alpha' } },
+  notifySettings,
+  fetchImpl,
+  mailer,
+  envText = `GITHUB_TOKEN=${TOKEN}\nPORT=8787\n`,
+  updateTrigger,
+  version = '1.4.2',
+} = {}) {
   const dir = tmpDir();
   const configFile = path.join(dir, 'config.json');
   const adminFile = path.join(dir, 'admin.json');
+  const envFile = path.join(dir, 'env');
   fs.writeFileSync(configFile, JSON.stringify(modules, null, 2));
+  if (envText !== null) fs.writeFileSync(envFile, envText, { mode: 0o600 });
   const settings = { passwordHash: await passwordHash(), notify: notifySettings || defaultNotify() };
   fs.writeFileSync(adminFile, serializeAdminSettings(settings));
   const logs = [];
@@ -57,6 +68,10 @@ async function start({ modules = { alpha: { repo: 'o/alpha' } }, notifySettings,
     token: TOKEN,
     publicBaseUrl: BASE,
     configFile,
+    envFile,
+    adminFile,
+    updateTrigger,
+    version,
     admin: { file: adminFile, settings: parseAdminSettings(fs.readFileSync(adminFile, 'utf8')), hosts: [] },
     fetchImpl: fetchImpl || (async (url) => {
       throw new Error(`unexpected fetch ${url}`);
@@ -97,6 +112,8 @@ async function start({ modules = { alpha: { repo: 'o/alpha' } }, notifySettings,
     dir,
     configFile,
     adminFile,
+    envFile,
+    server,
     logs,
     call,
     login,
@@ -504,4 +521,350 @@ test('env files are parsed without shell expansion', () => {
   assert.equal(env.B, 'two words');
   assert.equal(env.C, '$HOME');
   assert.equal(env.bad, undefined);
+});
+
+// A fake GitHub for the token and setup tests. Every Authorization header it sees is recorded in `seen`; `tokens` maps
+// a token to its owner's login (unknown tokens get 401); `expires` is the expiry header GitHub would send.
+function fakeGithub({ tokens = { [TOKEN]: 'octo' }, expires = '2099-01-01 00:00:00 UTC', repos = {}, down = false, userStatus } = {}) {
+  const seen = [];
+  const fetchImpl = async (url, init = {}) => {
+    const auth = (init.headers && init.headers.Authorization) || '';
+    seen.push({ url, auth });
+    if (down) throw new TypeError('fetch failed');
+    if (url === `${API}/user` && userStatus) return new Response('{"message":"API rate limit exceeded"}', { status: userStatus });
+    const tok = auth.replace(/^Bearer /, '');
+    if (!Object.hasOwn(tokens, tok)) return new Response('{"message":"Bad credentials"}', { status: 401 });
+    if (url === `${API}/user`) {
+      return new Response(JSON.stringify({ login: tokens[tok] }), {
+        headers: expires ? { 'github-authentication-token-expiration': expires } : {},
+      });
+    }
+    const m = /^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/]+)(\/releases\/latest)?$/.exec(url);
+    const repo = m && repos[m[1]];
+    if (!repo) return new Response('{"message":"Not Found"}', { status: 404 });
+    if (!m[2]) return new Response('{}');
+    if (!repo.assets) return new Response('{"message":"Not Found"}', { status: 404 });
+    return new Response(JSON.stringify({ tag_name: repo.tag || 'v1.0.0', assets: repo.assets.map((name) => ({ name })) }));
+  };
+  return { fetchImpl, seen };
+}
+
+const NEW_TOKEN = `github_pat_${'N'.repeat(40)}`;
+const BAD_TOKEN = `github_pat_${'B'.repeat(40)}`;
+const PROXY_REPO = 'dxcufgb/FoundryVTT-Private-Github-proxy';
+const BOTH = ['module.json', 'module.zip'];
+
+test('the GitHub token can be replaced on the admin page once GitHub accepts it, and is never shown', async () => {
+  const gh = fakeGithub({ tokens: { [TOKEN]: 'octo', [NEW_TOKEN]: 'octo' }, repos: { 'o/alpha': { assets: BOTH } } });
+  const s = await start({ fetchImpl: gh.fetchImpl, envText: `# token\r\nGITHUB_TOKEN=${TOKEN}\r\nPORT=8787\r\n` });
+  try {
+    let res = await s.login();
+    assert.deepEqual(res.data.token, { kind: 'GitHub token', file: s.envFile, canChange: true, problem: '', lastCheck: null });
+    // the format is checked first, then GitHub must accept the token; nothing is written until then
+    assert.equal((await s.call('PUT', 'token', { token: 'short' })).status, 400);
+    assert.equal((await s.call('PUT', 'token', { token: 'github_pat_REPLACE_ME' })).status, 400);
+    assert.equal((await s.call('PUT', 'token', { token: `${NEW_TOKEN}\nNODE_OPTIONS=x` })).status, 400);
+    res = await s.call('PUT', 'token', { token: BAD_TOKEN });
+    assert.equal(res.status, 400);
+    assert.match(res.data.error, /not saved: GitHub rejects the token/);
+    assert.equal(fs.readFileSync(s.envFile, 'utf8'), `# token\r\nGITHUB_TOKEN=${TOKEN}\r\nPORT=8787\r\n`);
+    // a change needs the CSRF token like every other
+    assert.equal((await s.call('PUT', 'token', { token: NEW_TOKEN }, { 'X-CSRF-Token': 'wrong' })).status, 403);
+
+    res = await s.call('PUT', 'token', { token: ` ${NEW_TOKEN} ` });
+    assert.equal(res.status, 200);
+    assert.equal(res.data.token.kind, 'fine-grained personal access token');
+    // only the GITHUB_TOKEN line changes; comments, other settings and the Windows line endings stay
+    assert.equal(fs.readFileSync(s.envFile, 'utf8'), `# token\r\nGITHUB_TOKEN=${NEW_TOKEN}\r\nPORT=8787\r\n`);
+    // the proxy uses it at once
+    gh.seen.length = 0;
+    await fetch(`${s.url}/alpha/module.json`);
+    assert.ok(gh.seen.length > 0 && gh.seen.every((x) => x.auth === `Bearer ${NEW_TOKEN}`));
+    const state = await s.call('GET', 'state');
+    for (const text of [state.text, res.text, ...s.logs]) {
+      assert.ok(!text.includes(NEW_TOKEN) && !text.includes(TOKEN) && !text.includes(BAD_TOKEN));
+    }
+    assert.ok(s.logs.some((l) => /GitHub token changed/.test(l)));
+  } finally {
+    await s.close();
+  }
+});
+
+test('the token cannot be changed without a writable env file holding GITHUB_TOKEN', async () => {
+  const gh = fakeGithub({ tokens: { [TOKEN]: 'octo', [NEW_TOKEN]: 'octo' } });
+  for (const [envText, problem] of [[null, /cannot read it/], ['PORT=8787\n', /no GITHUB_TOKEN line/]]) {
+    const s = await start({ fetchImpl: gh.fetchImpl, envText });
+    try {
+      const res = await s.login();
+      assert.equal(res.data.token.canChange, false);
+      assert.match(res.data.token.problem, problem);
+      const put = await s.call('PUT', 'token', { token: NEW_TOKEN });
+      assert.equal(put.status, 409);
+      assert.match(put.data.error, /cannot be changed here/);
+    } finally {
+      await s.close();
+    }
+  }
+  // read-only for the proxy's account (root may write anything, so only checked as another user)
+  if (process.getuid && process.getuid() !== 0) {
+    const s = await start({ fetchImpl: gh.fetchImpl });
+    try {
+      fs.chmodSync(s.envFile, 0o400);
+      const res = await s.login();
+      assert.match(res.data.token.problem, /may not write it/);
+    } finally {
+      await s.close();
+    }
+  }
+});
+
+test('Test setup checks the token, the proxy repository and every module repository', async () => {
+  const gh = fakeGithub({
+    tokens: { [TOKEN]: 'octo', [NEW_TOKEN]: 'neo' },
+    repos: {
+      'o/alpha': { assets: BOTH, tag: 'v2.0.0' },
+      'o/gamma': {},
+      'o/delta': { assets: ['module.json'] },
+    },
+  });
+  const modules = { alpha: { repo: 'o/alpha' }, beta: { repo: 'o/beta' }, gamma: { repo: 'o/gamma' }, delta: { repo: 'o/delta' } };
+  const s = await start({ modules, fetchImpl: gh.fetchImpl });
+  try {
+    await s.login();
+    let res = await s.call('POST', 'setup-test', {});
+    assert.equal(res.status, 200);
+    assert.equal(res.data.tested, 'saved');
+    assert.equal(res.data.token.status, 'ok');
+    assert.match(res.data.token.message, /accepted \(octo\); expires 2099-01-01/);
+    const by = Object.fromEntries(res.data.checks.map((c) => [c.name, c]));
+    assert.deepEqual(Object.keys(by), ['Automatic updates', 'alpha', 'beta', 'delta', 'gamma']);
+    assert.equal(by['Automatic updates'].repo, PROXY_REPO);
+    assert.equal(by['Automatic updates'].status, 'warn');
+    assert.match(by['Automatic updates'].message, /cannot see this repository.*own updater token/);
+    assert.deepEqual([by.alpha.status, by.alpha.message], ['ok', 'latest release v2.0.0']);
+    assert.match(by.beta.message, /cannot see this repository/);
+    assert.match(by.gamma.message, /no published release/);
+    assert.match(by.delta.message, /lacks module\.zip/);
+    assert.ok(gh.seen.every((x) => x.auth === `Bearer ${TOKEN}`));
+
+    // a typed token is tested (and only tested): the saved one stays
+    gh.seen.length = 0;
+    res = await s.call('POST', 'setup-test', { token: NEW_TOKEN });
+    assert.equal(res.data.tested, 'typed');
+    assert.match(res.data.token.message, /\(neo\)/);
+    assert.ok(gh.seen.every((x) => x.auth === `Bearer ${NEW_TOKEN}`));
+    assert.ok(fs.readFileSync(s.envFile, 'utf8').includes(`GITHUB_TOKEN=${TOKEN}`));
+    assert.ok(!res.text.includes(NEW_TOKEN));
+    // a token GitHub rejects: nothing else is checked
+    res = await s.call('POST', 'setup-test', { token: BAD_TOKEN });
+    assert.equal(res.data.token.status, 'bad');
+    assert.deepEqual(res.data.checks, []);
+    assert.equal((await s.call('POST', 'setup-test', { token: 'not a token' })).status, 400);
+    assert.ok(s.logs.every((l) => !l.includes(TOKEN) && !l.includes(NEW_TOKEN) && !l.includes(BAD_TOKEN)));
+  } finally {
+    await s.close();
+  }
+});
+
+test('Test setup warns about a token that expires soon and reports an expired or unreachable one', async () => {
+  const soon = new Date(Date.now() + 3 * 86400000).toISOString().replace('T', ' ').replace(/\..*$/, ' UTC');
+  const past = '2020-01-01 00:00:00 UTC';
+  for (const [opts, status, message] of [
+    [{ expires: soon }, 'warn', /expires in [23] day/],
+    [{ expires: past }, 'bad', /expired on 2020-01-01/],
+    [{ expires: null }, 'ok', /no expiry date/],
+    [{ down: true }, 'bad', /could not reach GitHub/],
+    [{ userStatus: 403 }, 'bad', /did not confirm the token \(HTTP 403/],
+  ]) {
+    const gh = fakeGithub({ repos: { 'o/alpha': { assets: BOTH } }, ...opts });
+    const s = await start({ fetchImpl: gh.fetchImpl });
+    try {
+      await s.login();
+      const res = await s.call('POST', 'setup-test', {});
+      assert.equal(res.data.token.status, status);
+      assert.match(res.data.token.message, message);
+      // a token GitHub did not confirm is never saved
+      if (status === 'bad') {
+        const put = await s.call('PUT', 'token', { token: NEW_TOKEN });
+        assert.equal(put.status, 400);
+        assert.ok(fs.readFileSync(s.envFile, 'utf8').includes(`GITHUB_TOKEN=${TOKEN}`));
+      }
+    } finally {
+      await s.close();
+    }
+  }
+});
+
+test('the daily check e-mails problems every day they last and once more when they are gone', async () => {
+  const sent = [];
+  const mailer = async (smtp, msg) => sent.push(msg);
+  const repos = { [PROXY_REPO]: { assets: [] }, 'o/alpha': { assets: BOTH } };
+  const tokens = { [TOKEN]: 'octo' };
+  const gh = fakeGithub({ tokens, repos });
+  const notifySettings = {
+    recipients: ['gm@example.com'],
+    smtp: { host: 'smtp.example.com', port: 587, security: 'starttls', user: '', password: '', from: 'proxy@example.com' },
+  };
+  const s = await start({ fetchImpl: gh.fetchImpl, mailer, notifySettings });
+  try {
+    // all fine: nothing to say
+    let r = await s.server.runSetupCheck();
+    assert.deepEqual(r.problems, []);
+    assert.equal(sent.length, 0);
+    // the token lapses: mailed, and again the next day
+    delete tokens[TOKEN];
+    r = await s.server.runSetupCheck();
+    assert.equal(r.problems.length, 1);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].subject, /setup problems/);
+    assert.match(sent[0].text, /GitHub token: GitHub rejects the token/);
+    assert.match(sent[0].text, /http:\/\/localhost:8787\/_admin\//);
+    await s.server.runSetupCheck();
+    assert.equal(sent.length, 2);
+    // the admin page shows the last run
+    const state = await s.login();
+    assert.equal(state.data.token.lastCheck.problems.length, 1);
+    // the token works again, but a module repository is no longer readable
+    tokens[TOKEN] = 'octo';
+    delete repos['o/alpha'];
+    await s.server.runSetupCheck();
+    assert.equal(sent.length, 3);
+    assert.match(sent[2].text, /alpha \(o\/alpha\): the token cannot see this repository/);
+    // fixed: one "OK again" mail, then silence
+    repos['o/alpha'] = { assets: BOTH };
+    await s.server.runSetupCheck();
+    assert.match(sent[3].subject, /setup OK again/);
+    await s.server.runSetupCheck();
+    assert.equal(sent.length, 4);
+    // the token loses access to the proxy's own repository (automatic updates): that is mailed too
+    delete repos[PROXY_REPO];
+    await s.server.runSetupCheck();
+    assert.equal(sent.length, 5);
+    assert.match(sent[4].text, /Automatic updates \(dxcufgb\/FoundryVTT-Private-Github-proxy\): the token cannot see/);
+    for (const m of sent) assert.ok(!m.text.includes(TOKEN));
+    assert.ok(s.logs.every((l) => !l.includes(TOKEN)));
+  } finally {
+    await s.close();
+  }
+});
+
+test('the daily check stays quiet about a proxy repository the token was never given', async () => {
+  const sent = [];
+  const gh = fakeGithub({ repos: { 'o/alpha': { assets: BOTH } } });
+  const notifySettings = {
+    recipients: ['gm@example.com'],
+    smtp: { host: 'smtp.example.com', port: 587, security: 'starttls', user: '', password: '', from: 'proxy@example.com' },
+  };
+  const s = await start({ fetchImpl: gh.fetchImpl, mailer: async (smtp, msg) => sent.push(msg), notifySettings });
+  try {
+    const r = await s.server.runSetupCheck();
+    assert.deepEqual(r.problems, []);
+    assert.equal(sent.length, 0);
+    // Test setup still shows it
+    await s.login();
+    const res = await s.call('POST', 'setup-test', {});
+    assert.equal(res.data.checks.find((c) => c.kind === 'proxy').status, 'warn');
+  } finally {
+    await s.close();
+  }
+});
+
+test('the daily check waits an hour before mailing that GitHub cannot be reached, and runs on its own', async () => {
+  const sent = [];
+  const mailer = async (smtp, msg) => sent.push(msg);
+  const notifySettings = {
+    recipients: ['gm@example.com'],
+    smtp: { host: 'smtp.example.com', port: 587, security: 'starttls', user: '', password: '', from: 'proxy@example.com' },
+  };
+  const gh = fakeGithub({ down: true });
+  const s = await start({ fetchImpl: gh.fetchImpl, mailer, notifySettings });
+  try {
+    const r = await s.server.runSetupCheck({ deferUnreachable: true });
+    assert.equal(r.deferred, true);
+    assert.equal(sent.length, 0);
+    // the scheduler: first run (deferred), the retry an "hour" later mails it, then the daily rhythm
+    s.server.startDailyChecks({ firstDelayMs: 5, retryMs: 5, intervalMs: 60000 });
+    for (let i = 0; i < 100 && sent.length === 0; i++) await new Promise((x) => setTimeout(x, 10));
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].text, /could not reach GitHub/);
+    await new Promise((x) => setTimeout(x, 50));
+    assert.equal(sent.length, 1, 'no more mails before the next day');
+  } finally {
+    await s.close();
+  }
+});
+
+test('the Linux update trigger rewrites the request file the systemd path unit watches', async () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'update-request');
+  const trigger = fileUpdateTrigger(file);
+  assert.match(await trigger.problem(), /update-request is missing; re-run the installer/);
+  fs.writeFileSync(file, '', { mode: 0o600 });
+  assert.equal(await trigger.problem(), '');
+  await trigger.request();
+  assert.match(fs.readFileSync(file, 'utf8'), /^\d{4}-\d\d-\d\dT[\d:.]+Z\n$/);
+});
+
+test('the Windows update trigger only queries and runs the named task', async () => {
+  const calls = [];
+  let fail = false;
+  const run = (cmd, args, opts, cb) => {
+    calls.push([cmd, ...args]);
+    cb(fail ? new Error('Access is denied.') : null);
+  };
+  const trigger = taskUpdateTrigger('FoundryReleaseProxy-UpdateNow', run);
+  assert.equal(await trigger.problem(), '');
+  await trigger.request();
+  assert.deepEqual(calls, [
+    ['schtasks.exe', '/Query', '/TN', 'FoundryReleaseProxy-UpdateNow'],
+    ['schtasks.exe', '/Run', '/TN', 'FoundryReleaseProxy-UpdateNow'],
+  ]);
+  fail = true;
+  assert.match(await trigger.problem(), /missing or the proxy may not run it/);
+  assert.throws(() => taskUpdateTrigger('bad" & calc', run), ConfigError);
+});
+
+test('"Update proxy now" shows the versions and asks the updater to run, at most every two minutes', async () => {
+  const requests = [];
+  let problem = '';
+  const updateTrigger = { problem: async () => problem, request: async () => requests.push(Date.now()) };
+  const gh = fakeGithub({ repos: { [PROXY_REPO]: { assets: [], tag: 'v1.5.0' } } });
+  const s = await start({ fetchImpl: gh.fetchImpl, updateTrigger, version: '1.4.2' });
+  try {
+    let res = await s.login();
+    assert.equal(res.data.version, '1.4.2');
+    res = await s.call('GET', 'update');
+    assert.deepEqual(res.data, {
+      installed: '1.4.2', latest: '1.5.0', newer: true, latestProblem: '', canUpdate: true, problem: '', requestedAt: null,
+    });
+    // a change: CSRF token needed
+    assert.equal((await s.call('POST', 'update', {}, { 'X-CSRF-Token': 'wrong' })).status, 403);
+    res = await s.call('POST', 'update', {});
+    assert.equal(res.status, 202);
+    assert.equal(requests.length, 1);
+    assert.ok(s.logs.some((l) => /proxy update requested \(installed 1\.4\.2\)/.test(l)));
+    res = await s.call('POST', 'update', {});
+    assert.equal(res.status, 429);
+    assert.equal(requests.length, 1);
+    assert.ok((await s.call('GET', 'update')).data.requestedAt);
+  } finally {
+    await s.close();
+  }
+  // not set up (old install) or the token cannot see the proxy repository
+  problem = 'the scheduled task is missing';
+  const gh2 = fakeGithub({});
+  const s2 = await start({ fetchImpl: gh2.fetchImpl, updateTrigger, version: '1.4.2' });
+  try {
+    await s2.login();
+    const res = await s2.call('GET', 'update');
+    assert.equal(res.data.latest, null);
+    assert.match(res.data.latestProblem, /cannot see dxcufgb\/FoundryVTT-Private-Github-proxy/);
+    assert.equal(res.data.canUpdate, false);
+    const post = await s2.call('POST', 'update', {});
+    assert.equal(post.status, 409);
+    assert.match(post.data.error, /not available: the scheduled task is missing/);
+    assert.equal(requests.length, 1);
+  } finally {
+    await s2.close();
+  }
 });

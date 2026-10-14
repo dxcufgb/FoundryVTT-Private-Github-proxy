@@ -77,7 +77,8 @@ h1 .sub { color: var(--muted); font-weight: 400; }
   text-decoration: none;
   white-space: nowrap;
 }
-.menu a:hover, .menu a:focus-visible { background: var(--chip); outline: none; }
+.menu a:hover, .menu a:focus-visible { background: var(--chip); }
+.menu a:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .menu a[aria-current="page"] { font-weight: 600; }
 .back { margin: 0 0 8px; }
 .back a { color: var(--accent); text-decoration: none; font-size: 0.9em; }

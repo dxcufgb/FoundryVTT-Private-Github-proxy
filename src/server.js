@@ -12,6 +12,7 @@ const { createSelfSigned, defaultNames } = require('./selfsigned.js');
 const { execFile } = require('node:child_process');
 const { REPO: PROXY_REPO, compareVersions, parseVersion } = require('./updater.js');
 const { notify } = require('./notify.js');
+const zip = require('./zippatch.js');
 
 const GITHUB_API = 'https://api.github.com';
 const TIMEOUT_MS = 20000;
@@ -21,6 +22,8 @@ const ASSET_RE = /^[^/\\\s][^/\\]*$/;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 // A token that expires within this many days is reported as a warning by "Test setup".
 const EXPIRY_WARN_DAYS = 14;
+// Longest a zip download through the proxy may take before it is cut off.
+const ZIP_STREAM_TIMEOUT_MS = 10 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 // The version of this copy: the release build stamps the release's version into package.json.
@@ -148,6 +151,7 @@ function createApp({
   adminFile,
   adminUrl,
   admin,
+  patchZips = true,
   updateTrigger,
   version = PROXY_VERSION,
   fetchImpl = fetch,
@@ -190,8 +194,8 @@ function createApp({
     }
   }
 
-  // Resolves the asset's pre-signed download URL without following the redirect.
-  async function assetLocation(release, name) {
+  // Resolves the asset's pre-signed download URL without following the redirect; size from the release's JSON.
+  async function assetLink(release, name) {
     const asset = (release.assets || []).find((a) => a.name === name);
     if (!asset) throw new NotFound(`asset ${name} not found in release ${release.tag_name}`);
     const res = await api(asset.url, {
@@ -203,7 +207,131 @@ function createApp({
     if (!REDIRECTS.has(res.status) || !location) {
       throw new GithubError('asset download did not redirect', res.status);
     }
-    return location;
+    return { location, size: asset.size };
+  }
+
+  const assetLocation = async (release, name) => (await assetLink(release, name)).location;
+
+  // Bytes start..end (inclusive) of a pre-signed download. Like every pre-signed URL it is fetched WITHOUT the token.
+  async function fetchRange(location, start, end) {
+    const res = await api(location, { headers: { 'User-Agent': 'foundry-release-proxy', Range: `bytes=${start}-${end}` } });
+    const range = /^bytes (\d+)-(\d+)\//.exec(res.headers.get('content-range') || '');
+    if (res.status !== 206 || !range || Number(range[1]) !== start) {
+      await res.body?.cancel?.();
+      throw new zip.ZipPatchError(`GitHub sent no partial content (HTTP ${res.status})`);
+    }
+    let bytes;
+    try {
+      bytes = Buffer.from(await res.arrayBuffer());
+    } catch (err) {
+      throw new zip.ZipPatchError(`partial download failed (${err.message})`);
+    }
+    if (bytes.length !== end - start + 1) throw new zip.ZipPatchError('partial download cut short');
+    return bytes;
+  }
+
+  // What it takes to serve the zip with its module.json pointing at the proxy: the length of the original prefix
+  // (streamed unchanged) and the bytes that follow it. Throws ZipPatchError (or GithubError) to fall back to the
+  // redirect.
+  async function planPatchedZip(moduleId, release, link) {
+    const { location, size } = link;
+    if (!Number.isSafeInteger(size) || size < 22) throw new zip.ZipPatchError('unknown zip size');
+    const tailStart = size - Math.min(size, zip.TAIL_BYTES);
+    const tail = await fetchRange(location, tailStart, size - 1);
+    const { centralOffset, centralSize, count } = zip.readEnd(tail, size);
+    const central = centralOffset >= tailStart
+      ? tail.subarray(centralOffset - tailStart, centralOffset - tailStart + centralSize)
+      : await fetchRange(location, centralOffset, centralOffset + centralSize - 1);
+    const entries = zip.readCentral(central, count);
+    const target = zip.findManifest(entries);
+    if (!target) throw new zip.ZipPatchError('no module.json at the top of the zip');
+    const span = zip.localSpan(target);
+    if (span.start >= centralOffset) throw new zip.ZipPatchError('damaged central directory');
+    const local = await fetchRange(location, span.start, Math.min(span.start + span.length, centralOffset) - 1);
+    const content = zip.patchManifestText(
+      zip.readLocal(target, local),
+      `${base}/${moduleId}/module.json`,
+      `${base}/${moduleId}/${encodeURIComponent(release.tag_name)}/module.zip`,
+    );
+    if (!content) throw new zip.ZipPatchError('its module.json already points at the proxy');
+    return { prefixLength: centralOffset, tail: zip.buildTail({ entries, target, content, centralOffset }) };
+  }
+
+  // A module zip. Foundry checks for updates with the "manifest" URL of the module.json INSIDE the zip, so that one
+  // is pointed at the proxy: the original bytes are streamed through unchanged up to the zip's central directory,
+  // then the patched module.json and a new directory follow (see zippatch.js). Anything unexpected before the first
+  // byte is sent falls back to the plain redirect to GitHub (also PATCH_ZIPS=off).
+  async function serveZip(req, res, moduleId, release, cfg) {
+    const link = await assetLink(release, cfg.zipAsset);
+    const tag = release.tag_name;
+    const redirect = (why) => {
+      log(`${moduleId}: zip ${tag} redirected to GitHub${why ? ` (not patched: ${why})` : ''}`);
+      return send(res, 302, `redirecting to ${tag} download`, { Location: link.location });
+    };
+    if (!patchZips) return redirect('');
+    let plan;
+    try {
+      plan = await planPatchedZip(moduleId, release, link);
+    } catch (err) {
+      if (err instanceof zip.ZipPatchError || err instanceof GithubError) return redirect(err.message);
+      throw err;
+    }
+    const headers = {
+      'Content-Type': 'application/zip',
+      'Content-Length': String(plan.prefixLength + plan.tail.length),
+      'Content-Disposition': 'attachment; filename="module.zip"',
+      'Cache-Control': 'no-store',
+    };
+    if (req.method === 'HEAD') {
+      res.writeHead(200, headers);
+      return res.end();
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ZIP_STREAM_TIMEOUT_MS);
+    let upstream = null;
+    if (plan.prefixLength > 0) {
+      try {
+        upstream = await fetchImpl(link.location, {
+          headers: { 'User-Agent': 'foundry-release-proxy', Range: `bytes=0-${plan.prefixLength - 1}` },
+          signal: controller.signal,
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        return redirect(`download failed (${err.message})`);
+      }
+      if (upstream.status !== 206 || !/^bytes 0-/.test(upstream.headers.get('content-range') || '')) {
+        clearTimeout(timer);
+        await upstream.body?.cancel?.();
+        return redirect(`GitHub sent no partial content (HTTP ${upstream.status})`);
+      }
+    }
+    res.writeHead(200, headers);
+    // the client went away (or the response ended): stop downloading
+    res.on('close', () => controller.abort());
+    const drained = () => new Promise((resolve, reject) => {
+      const done = () => { res.off('drain', done); res.off('close', gone); resolve(); };
+      const gone = () => { res.off('drain', done); res.off('close', gone); reject(new Error('client closed the connection')); };
+      res.on('drain', done);
+      res.on('close', gone);
+    });
+    let sent = 0;
+    try {
+      if (upstream) {
+        for await (const chunk of upstream.body) {
+          sent += chunk.length;
+          if (sent > plan.prefixLength) throw new Error('GitHub sent more than asked for');
+          if (!res.write(chunk)) await drained();
+        }
+      }
+      if (sent !== plan.prefixLength) throw new Error('download cut short');
+      res.end(plan.tail);
+      log(`${moduleId}: zip ${tag} served with its module.json pointing at the proxy`);
+    } catch (err) {
+      log(`${moduleId}: zip ${tag} failed after ${sent} bytes (${err.message})`);
+      res.destroy();
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async function manifestFor(moduleId, release, cfg) {
@@ -516,11 +644,7 @@ function createApp({
 
     try {
       const release = await getRelease(cfg.repo, tag);
-      if (last === 'module.zip') {
-        const location = await assetLocation(release, cfg.zipAsset);
-        log(`${moduleId}: zip ${release.tag_name} redirected to GitHub`);
-        return send(res, 302, `redirecting to ${release.tag_name} download`, { Location: location });
-      }
+      if (last === 'module.zip') return await serveZip(req, res, moduleId, release, cfg);
       const manifest = await manifestFor(moduleId, release, cfg);
       log(`${moduleId}: served manifest ${release.tag_name}`);
       return send(res, 200, JSON.stringify(manifest, null, 2), { 'Content-Type': 'application/json' });
@@ -696,8 +820,10 @@ function main(env = process.env) {
     const updateTrigger = process.platform === 'win32'
       ? taskUpdateTrigger(env.UPDATE_TASK || 'FoundryReleaseProxy-UpdateNow')
       : fileUpdateTrigger(env.UPDATE_REQUEST_FILE || path.join(path.dirname(configFile), 'update-request'));
+    // PATCH_ZIPS=off: module zips are plain redirects to GitHub (their module.json keeps its own manifest URL).
+    const patchZips = !/^(off|0|false|no)$/i.test(env.PATCH_ZIPS || '');
     const server = createApp({
-      modules, token, publicBaseUrl, configFile, envFile, adminFile, adminUrl, admin, updateTrigger,
+      modules, token, publicBaseUrl, configFile, envFile, adminFile, adminUrl, admin, updateTrigger, patchZips,
     });
     // DAILY_CHECK=off: no daily "Test setup" and no problem e-mails.
     const dailyCheck = !/^(off|0|false|no)$/i.test(env.DAILY_CHECK || '');

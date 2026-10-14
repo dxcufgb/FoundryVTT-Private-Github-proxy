@@ -3,7 +3,8 @@
 A dependency-free Node HTTP proxy (`src/server.js`) that lets Foundry VTT install and update modules
 released from **private** GitHub repositories. It holds a GitHub token, serves a module's
 `module.json` from the latest (or a tagged) release with `manifest`/`download` rewritten to point
-at the proxy, and answers zip requests with a `302` to GitHub's pre-signed asset URL. It runs as a
+at the proxy, and serves zips from GitHub's pre-signed asset URL with the `module.json` inside rewritten the same way
+(Foundry's update check uses that one), falling back to a `302` to that URL. It runs as a
 systemd service on a Raspberry Pi next to Foundry, or as a Windows scheduled task. An opt-in auto-updater
 installs new releases of the proxy itself.
 
@@ -15,6 +16,10 @@ installs new releases of the proxy itself.
   `main()` only runs when executed directly. Hands `/_admin` to `src/admin.js` when the admin page is on. With
   `ADMIN_PORT` it also opens the browser admin port (`server.createAdminServer(tls)`): only admin routes, HTTPS (a TLS
   first byte goes to https, anything else gets a 301 to https://), `/` → `/_admin/`.
+- `src/zippatch.js` – rewrites the `module.json` inside a zip without unpacking or buffering it: reads the end record and
+  central directory, finds the top-level (or single-folder) `module.json`, and builds what follows the unchanged prefix
+  (a new local entry, the central directory pointing at it, a new end record). Refuses (`ZipPatchError`) ZIP64,
+  multi-disk, encrypted or odd-method zips; the server then falls back to the redirect.
 - `src/selfsigned.js` – ECDSA P-256 self-signed X.509 certificate built with `node:crypto` (DER by hand); CLI writes
   `admin-tls.crt`/`.key` for the installers.
 - `src/admin.js` – the password-protected admin page (`/_admin/`, UI files in `src/admin-ui/`): JSON API to list/add/edit/
@@ -35,7 +40,8 @@ installs new releases of the proxy itself.
   `--download` the latest release of this repo (`foundry-release-proxy-<version>-linux.tar.gz` / `-windows.zip`), verify it
   against `SHA256SUMS.txt`. Exit 0 = up to date, 10 = update available/downloaded, 1 = error. No fallback to the legacy
   names: a newer release without the new ones is an error. Installing is left to the scripts.
-- `test/server.test.js`, `test/updater.test.js`, `test/admin.test.js` (admin API, mailer against a fake SMTP server,
+- `test/zippatch.test.js` (zip patching against zips built by `test/zipfixture.js`, which also reads zips back
+  independently), `test/server.test.js`, `test/updater.test.js`, `test/admin.test.js` (admin API, mailer against a fake SMTP server,
   notifier), `test/adminweb.test.js` (admin port over HTTPS, certificate, reverse-proxy headers) – `node:test` suites with an injected `fetchImpl` mock
   (no network).
 - `install.sh` – the single Linux entry point, at the top of the Linux archive (the one-liner of `dxcufgb/install` runs it
@@ -101,7 +107,11 @@ installs new releases of the proxy itself.
 - **The token** may only go to `api.github.com` and to asset URLs taken from GitHub's JSON. The
   pre-signed redirect `location` must be fetched **without** auth, and the token must never
   appear in a response body or a log line (both are tested).
-- **Zips stay redirects**: the proxy must never download or stream a module zip.
+- **Zips**: the proxy streams a module zip from its pre-signed URL (fetched **without** auth, partial `Range` reads only)
+  and changes nothing but the `module.json` reference at the end (`src/zippatch.js`). It never unpacks the zip or holds
+  it in memory (only the end of the zip and `module.json`, with size caps); anything unexpected before the first byte
+  falls back to the `302`, and a failure after it tears the connection down (never a truncated zip that looks whole).
+  `PATCH_ZIPS=off` restores plain redirects.
 - **Path handling**: requests are 2–3 path segments, each `decodeURIComponent`'d (bad escapes →
   404); module ids are looked up with `Object.hasOwn` on a null-prototype map. Any tag from a
   request is `encodeURIComponent`'d before it reaches a GitHub URL.

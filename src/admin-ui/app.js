@@ -1,6 +1,7 @@
 'use strict';
 // Administration page of the Foundry release proxy. Plain DOM code, no libraries; every value from the server is
-// put into the page with textContent, never as HTML.
+// put into the page with textContent, never as HTML. One HTML page with several views, chosen by the address's
+// fragment: #/ (modules), #/token, #/notifications, #/password (the settings menu links to them).
 
 (() => {
   const $ = (sel) => document.querySelector(sel);
@@ -10,6 +11,12 @@
   let editing = null; // module id being edited, null when adding
   let update = null; // the last GET update answer
   let watching = null; // timer while waiting for an update to restart the proxy
+  const PAGES = {
+    modules: 'Modules',
+    token: 'GitHub token',
+    notifications: 'Notifications',
+    password: 'Admin password',
+  };
 
   function toast(message, bad = false) {
     const el = $('#toast');
@@ -49,18 +56,77 @@
   }
 
   function showLogin() {
+    closeMenu();
     $('#app-view').hidden = true;
-    $('#logout').hidden = true;
+    $('#top-actions').hidden = true;
+    $('#app-footer').hidden = true;
     $('#login-view').hidden = false;
+    document.title = 'Foundry Release Proxy';
     $('#login-form').password.focus();
   }
 
   function showApp(data) {
     $('#login-view').hidden = true;
     $('#app-view').hidden = false;
-    $('#logout').hidden = false;
+    $('#top-actions').hidden = false;
+    $('#app-footer').hidden = false;
     render(data);
+    showPage();
     checkUpdate();
+  }
+
+  // The view named by the address's fragment (#/token ...); anything unknown is the modules page.
+  function currentPage() {
+    const name = location.hash.replace(/^#\/?/, '');
+    return Object.hasOwn(PAGES, name) ? name : 'modules';
+  }
+
+  function showPage() {
+    const page = currentPage();
+    for (const section of document.querySelectorAll('.page')) section.hidden = section.dataset.page !== page;
+    for (const item of document.querySelectorAll('#settings-menu a')) {
+      if (item.getAttribute('href') === `#/${page}`) item.setAttribute('aria-current', 'page');
+      else item.removeAttribute('aria-current');
+    }
+    document.title = page === 'modules' ? 'Foundry Release Proxy' : `${PAGES[page]} – Foundry Release Proxy`;
+    closeMenu();
+  }
+
+  // Settings menu (the cogwheel): opens below the button, closes on Escape, a click outside or a choice.
+  function menuItems() {
+    return [...document.querySelectorAll('#settings-menu [role="menuitem"]')];
+  }
+
+  function openMenu(focusIndex = 0) {
+    $('#settings-menu').hidden = false;
+    $('#settings-button').setAttribute('aria-expanded', 'true');
+    const items = menuItems();
+    if (items[focusIndex]) items[focusIndex].focus();
+  }
+
+  function closeMenu(returnFocus = false) {
+    if ($('#settings-menu').hidden) return;
+    $('#settings-menu').hidden = true;
+    $('#settings-button').setAttribute('aria-expanded', 'false');
+    if (returnFocus) $('#settings-button').focus();
+  }
+
+  function menuKeys(e) {
+    const items = menuItems();
+    const i = items.indexOf(document.activeElement);
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeMenu(true);
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      items[(i + step + items.length) % items.length].focus();
+    } else if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      items[e.key === 'Home' ? 0 : items.length - 1].focus();
+    } else if (e.key === 'Tab') {
+      closeMenu();
+    }
   }
 
   function el(tag, props = {}, children = []) {
@@ -99,25 +165,30 @@
     renderNotify();
   }
 
+  // The footer: installed version, the latest release, and why "Update proxy now" is unavailable (if it is).
   function renderVersion(note) {
-    const status = $('#version-status');
-    let text = `Installed: ${state.version || 'unknown'}.`;
+    let text = `Foundry Release Proxy ${state.version || '(version unknown)'}`;
+    const notes = [];
     let bad = false;
     if (update) {
       if (update.latest) {
-        text += ` Latest release: ${update.latest}` +
-          (update.newer === true ? ' (newer).' : update.newer === false ? ' (this is up to date).' : '.');
+        text += update.newer === true ? ` · version ${update.latest} is available`
+          : update.newer === false ? ' · up to date' : ` · latest release ${update.latest}`;
       } else if (update.latestProblem) {
-        text += ` Latest release unknown: ${update.latestProblem}.`;
+        notes.push(`Latest release unknown: ${update.latestProblem}.`);
       }
       if (update.problem) {
-        text += ` "Update proxy now" is not available: ${update.problem}`;
+        notes.push(`"Update proxy now" is not available: ${update.problem}`);
         bad = true;
       }
     }
-    if (note) text += ` ${note}`;
-    status.textContent = text;
-    status.className = bad ? 'error' : '';
+    if (note) notes.push(note);
+    $('#version-status').textContent = text;
+    $('#version-status').className = update && update.newer ? 'newer' : '';
+    const noteEl = $('#version-note');
+    noteEl.textContent = notes.join(' ');
+    noteEl.hidden = notes.length === 0;
+    noteEl.className = bad ? 'small error' : 'small';
     $('#update-now').disabled = Boolean(watching) || !update || !update.canUpdate;
   }
 
@@ -482,6 +553,27 @@
   document.addEventListener('DOMContentLoaded', async () => {
     $('#login-form').addEventListener('submit', login);
     $('#logout').addEventListener('click', logout);
+    $('#settings-button').addEventListener('click', () => {
+      if ($('#settings-menu').hidden) openMenu();
+      else closeMenu();
+    });
+    $('#settings-button').addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        openMenu(e.key === 'ArrowDown' ? 0 : menuItems().length - 1);
+      }
+    });
+    $('#settings-menu').addEventListener('keydown', menuKeys);
+    $('#settings-menu').addEventListener('click', () => closeMenu());
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.menu-wrap')) closeMenu();
+    });
+    window.addEventListener('hashchange', () => {
+      if (!$('#app-view').hidden) {
+        showPage();
+        window.scrollTo(0, 0);
+      }
+    });
     $('#add-module').addEventListener('click', () => openModule(null));
     $('#module-form').addEventListener('submit', saveModule);
     $('#module-cancel').addEventListener('click', () => $('#module-dialog').close());

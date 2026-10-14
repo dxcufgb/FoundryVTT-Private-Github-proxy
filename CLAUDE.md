@@ -17,7 +17,9 @@ installs new releases of the proxy itself.
   first byte goes to https, anything else gets a 301 to https://), `/` → `/_admin/`.
 - `src/selfsigned.js` – ECDSA P-256 self-signed X.509 certificate built with `node:crypto` (DER by hand); CLI writes
   `admin-tls.crt`/`.key` for the installers.
-- `src/admin.js` – the password-protected admin page (`/_admin/`, UI files in `src/admin-ui/`): JSON API to list/add/edit/
+- `src/admin.js` – the password-protected admin page (`/_admin/`, UI files in `src/admin-ui/`: one HTML page whose views
+  are picked by the URL fragment, `#/` modules and `#/token`, `#/notifications`, `#/password` from the cogwheel menu;
+  the footer holds the version and the update buttons): JSON API to list/add/edit/
   delete modules (validated with `parseConfig`, written back to `config.json` in place), the GitHub token (`PUT
   /api/token`: format check, GitHub must accept it, then the `GITHUB_TOKEN` line of `env` (`ENV_FILE`, default next to
   `CONFIG_FILE`) is rewritten in place and the proxy switches over; `POST /api/setup-test`: the token, the proxy's own

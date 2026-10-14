@@ -2,8 +2,8 @@
 
 A tiny HTTP proxy that lets a self-hosted **Foundry VTT** server install and update modules whose releases live in
 **private GitHub repositories**. Foundry cannot authenticate to GitHub, so the proxy holds a read-only token, serves
-the module manifest, and redirects the zip download to a short-lived GitHub URL (the zip never passes through the
-proxy). Node.js only, no npm dependencies. Runs as a systemd service on Linux (e.g. a Raspberry Pi) or as a
+the module manifest, and passes the zip through from a short-lived GitHub URL with the module's own `module.json`
+pointed at the proxy, so that Foundry's update checks come back to it. Node.js only, no npm dependencies. Runs as a systemd service on Linux (e.g. a Raspberry Pi) or as a
 scheduled task on Windows, and can optionally keep itself up to date from this repository's releases (and e-mail you
 when it did). A password-protected **administration page** (`/_admin/`) lists the modules, adds, edits and deletes them,
 copies a module's link for Foundry, and manages the notification e-mail addresses.
@@ -11,14 +11,14 @@ copies a module's link for Foundry, and manages the notification e-mail addresse
 ```
 Foundry ──manifest URL──▶ proxy ──token──▶ GitHub API (latest release, manifest asset)
 Foundry ◀── manifest with download/manifest rewritten to the proxy
-Foundry ──download URL──▶ proxy ──302──▶ pre-signed GitHub URL ──▶ Foundry (zip straight from GitHub)
+Foundry ──download URL──▶ proxy ◀── pre-signed GitHub URL (no token): the zip streamed through, module.json patched
 ```
 
 | Request | Result |
 | --- | --- |
 | `GET /<module-id>/module.json` | manifest of the **latest** release (`manifest` and `download` rewritten to the proxy) |
 | `GET /<module-id>/<tag>/module.json` | manifest of that tag, rewritten the same way |
-| `GET /<module-id>/<tag>/module.zip` | `302` to the pre-signed GitHub download of that tag's zip |
+| `GET /<module-id>/<tag>/module.zip` | that tag's zip with its `module.json` pointing at the proxy ([why](#module-zips-and-updates)); `302` to the pre-signed GitHub download when it cannot be patched or `PATCH_ZIPS=off` |
 | `/_admin/` and `/_admin/api/...` | the [administration page](#administration-page) (`404` while it has no password) |
 | anything on `ADMIN_PORT` (if set) | the admin page only, over HTTPS: `/` → `302 /_admin/`, plain `http://` → `301 https://` |
 | `POST`/`PUT`/`DELETE` outside `/_admin/` | `405` (the proxy routes are `GET`/`HEAD` only) |
@@ -44,7 +44,8 @@ on the administration page take effect at once (and are written back to the file
 restart the service. An empty `{}` is only accepted while the administration page is on.
 
 Environment variables (see `.env.example`): `GITHUB_TOKEN` (required), `PORT` (default `8787`), `HOST` (default
-`127.0.0.1`), `PUBLIC_BASE_URL` (default `http://localhost:<PORT>`), `CONFIG_FILE`, `ADMIN_FILE` (default `admin.json`
+`127.0.0.1`), `PUBLIC_BASE_URL` (default `http://localhost:<PORT>`), `PATCH_ZIPS` (`off`: zips are plain redirects,
+see [Module zips and updates](#module-zips-and-updates)), `CONFIG_FILE`, `ADMIN_FILE` (default `admin.json`
 next to `CONFIG_FILE`), `ENV_FILE` (the file holding `GITHUB_TOKEN`, where a token changed on the admin page is saved;
 default `env` next to `CONFIG_FILE`), `DAILY_CHECK` (`off` turns off the [daily check](#daily-check)), `ADMIN_HOSTS`
 (extra host names the admin page answers to, comma separated) and the
@@ -144,7 +145,7 @@ Node.js that `install.sh` downloaded; keeps `/etc/foundry-release-proxy/config.j
 systemctl status foundry-release-proxy
 journalctl -u foundry-release-proxy -f
 curl -s  http://localhost:8787/transformations/module.json   # manifest; "download" points at the proxy
-curl -sI http://localhost:8787/transformations/v1.2.0/module.zip   # expect HTTP 302 and a Location: header
+curl -sI http://localhost:8787/transformations/v1.2.0/module.zip   # HTTP 200 (zip with module.json patched), or 302 + Location: when it cannot be patched
 ```
 
 Use the tag of a real release in the second command. Day to day: `sudo systemctl status|restart|stop foundry-release-proxy`.
@@ -244,9 +245,33 @@ Test from inside the container: `docker exec <foundry-container> curl -sI http:/
 
 **Setup → Add-on Modules → Install Module**, paste the **Manifest URL**
 `http://localhost:8787/<module-id>/module.json` (e.g. `.../transformations/module.json`; use the Docker-specific URL
-from section 3 if it applies), then **Install**. Foundry fetches the manifest from the proxy and downloads the zip via
-the proxy's redirect. Updates then appear like any other module's: Foundry re-fetches the same manifest URL and compares
-`version`, so publishing a new GitHub release is all that's needed.
+from section 3 if it applies), then **Install**. Foundry fetches the manifest from the proxy and downloads the zip
+through it. Updates then appear like any other module's, so publishing a new GitHub release is all that's needed.
+
+### Module zips and updates
+
+Foundry checks for updates with the `manifest` URL of the **installed** `module.json`, the one it unpacked from the zip,
+not the URL you installed from. A module's own `module.json` usually points at its GitHub release
+(`https://github.com/<owner>/<repo>/releases/latest/download/module.json`), which Foundry cannot read for a private
+repository. So the proxy hands Foundry the zip with that file's `manifest` and `download` replaced by its own links:
+
+- It reads the zip's size from the release, then fetches only the end of the zip (its table of contents) and the
+  `module.json` from GitHub's pre-signed URL (partial downloads, never with the token).
+- It streams the original bytes to Foundry unchanged and appends the patched `module.json` and a new table of contents
+  that points at it. The old copy stays in the file unreferenced. The zip is never unpacked or held in memory, so this
+  works on a Raspberry Pi for zips of hundreds of MB.
+- The `module.json` Foundry reads is the one at the top of the zip, or else the only one inside a single top-level
+  folder. Every other file is untouched.
+- When anything is unexpected (no `module.json` there, not valid JSON, an encrypted or ZIP64 zip, GitHub refusing
+  partial downloads), the proxy falls back to the plain `302` to GitHub and logs why (`zip vX redirected to GitHub (not
+  patched: ...)`); the module still installs, only updates do not come back through the proxy. If the module's
+  `module.json` already points at the proxy, nothing is patched either.
+- `PATCH_ZIPS=off` in `env` turns this off: zips are plain redirects again.
+
+Modules installed **before** this version still have the GitHub URL in their installed `module.json`, so Foundry cannot
+see their next update. Fix each once: reinstall it from the proxy URL (Setup → Add-on Modules → Install Module), or
+edit `manifest` in `Data/modules/<module-id>/module.json` on the Foundry server to
+`http://localhost:8787/<module-id>/module.json` (your proxy address). From then on updates come through the proxy.
 
 ## Adding another private module
 
@@ -642,6 +667,9 @@ are on.
   1.4.1 ran with a strict root umask (e.g. `077`) and left the code folder unreadable for the service user. Installing
   1.4.1 or newer fixes the modes; until then: `sudo chmod -R u=rwX,go=rX /opt/foundry-release-proxy` and
   `sudo systemctl restart foundry-release-proxy`.
+- Foundry's update check for a private module fails or contacts `github.com`: the installed `module.json` still points
+  at GitHub (installed before this version, or the zip could not be patched; the log says why). See
+  [Module zips and updates](#module-zips-and-updates).
 - `404` for a module that exists: the repo has no published (non-draft, non-prerelease) release, the release lacks the
   assets, or the token has no access to that repo.
 - `502`: GitHub rejected the request; the log line shows the module id and status (`401` expired/invalid token).

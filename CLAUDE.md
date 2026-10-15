@@ -20,8 +20,12 @@ installs new releases of the proxy itself.
   central directory, finds the top-level (or single-folder) `module.json`, and builds what follows the unchanged prefix
   (a new local entry, the central directory pointing at it, a new end record). Refuses (`ZipPatchError`) ZIP64,
   multi-disk, encrypted or odd-method zips; the server then falls back to the redirect.
-- `src/selfsigned.js` – ECDSA P-256 self-signed X.509 certificate built with `node:crypto` (DER by hand); CLI writes
-  `admin-tls.crt`/`.key` for the installers.
+- `src/selfsigned.js` – ECDSA P-256 self-signed X.509 certificates built with `node:crypto` (DER by hand): a one-use
+  certificate authority (its key is never written) signs the admin port's certificate; `admin-tls.crt` holds both.
+  Chrome saves no passwords on a page with a certificate warning, so `/_admin/certificate.crt` (no login) serves that
+  authority (`trustAnchor`: only from such a chain) and the login card tells how to trust it. CLI writes
+  `admin-tls.crt`/`.key` for the installers; `--outdated` (a lone certificate of 1.7.3 or older: the installers
+  replace it), `--fingerprint` (the authority's).
 - `src/admin.js` – the password-protected admin page (`/_admin/`, UI files in `src/admin-ui/`: one HTML page whose views
   are picked by the URL fragment, `#/` modules and `#/token`, `#/notifications`, `#/password`, all in the cogwheel menu
   with the current page highlighted; with a token in use the token page shows a checkmark and "Add new token" (a dialog);

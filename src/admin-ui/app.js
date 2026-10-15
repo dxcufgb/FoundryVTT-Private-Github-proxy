@@ -59,17 +59,26 @@
     closeMenu();
     $('#app-view').hidden = true;
     $('#top-actions').hidden = true;
-    $('#app-footer').hidden = true;
+    $('#app-footer').hidden = false;
+    $('#footer-version').hidden = true;
+    $('#footer-actions').hidden = true;
+    $('#brand-logo').hidden = true;
     $('#login-view').hidden = false;
+    document.body.classList.add('logged-out');
     document.title = 'Foundry Release Proxy';
+    $('#login-form').password.value = '';
     $('#login-form').password.focus();
   }
 
   function showApp(data) {
+    document.body.classList.remove('logged-out');
     $('#login-view').hidden = true;
     $('#app-view').hidden = false;
     $('#top-actions').hidden = false;
     $('#app-footer').hidden = false;
+    $('#footer-version').hidden = false;
+    $('#footer-actions').hidden = false;
+    $('#brand-logo').hidden = false;
     render(data);
     showPage();
     checkUpdate();
@@ -612,10 +621,22 @@
     }
     try {
       render(await call('PUT', 'password', { current: form.current.value, password: form.password.value }));
+      storeCredential(form.password.value);
       form.reset();
       toast('Password changed. Other sessions were logged out.');
     } catch (err) {
       toast(err.message, true);
+    }
+  }
+
+  // The page has one fixed user name, "admin" (the hidden username fields of the login and password forms).
+  function storeCredential(password) {
+    if (typeof window.PasswordCredential !== 'function' || !navigator.credentials) return;
+    try {
+      navigator.credentials.store(new window.PasswordCredential({ id: 'admin', password, name: document.title }))
+        .catch(() => {});
+    } catch {
+      // not offered: the browser's own form detection still works
     }
   }
 
@@ -626,7 +647,9 @@
     error.hidden = true;
     try {
       const data = await call('POST', 'login', { password: form.password.value });
-      form.reset();
+      // Offer the password to the browser's password manager. The form never navigates, so tell Chrome directly
+      // (others notice the hidden form); the field is cleared at the next showLogin, not here, so they still see it.
+      storeCredential(form.password.value);
       showApp(data);
     } catch (err) {
       error.textContent = err.message;

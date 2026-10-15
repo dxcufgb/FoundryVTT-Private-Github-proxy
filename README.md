@@ -303,9 +303,12 @@ itself. Non-interactive installs take it from `FOUNDRY_PROXY_ADMIN_PASSWORD` (ne
 
 Layout: the main page lists the modules. The **cogwheel** next to **Log out** opens a menu with **Modules** and the
 settings pages (**GitHub token**, **Notifications**, **Admin password**), the current page highlighted; each has its own
-address (`/_admin/#/`, `#/token`, `#/notifications`, `#/password`), so the browser's back button and bookmarks work. The footer at the bottom of every
-page shows the installed version, whether a newer release exists, and **Check for update**, which offers to update the
-proxy when there is a newer release.
+address (`/_admin/#/`, `#/token`, `#/notifications`, `#/password`), so the browser's back button and bookmarks work. The top bar shows the
+logo once you are logged in. The footer at the bottom of every page shows the installed version, whether a newer release
+exists, and **Check for update**, which offers to update the proxy when there is a newer release; the login page's
+footer only has the "Built by Dxcufgb 2026" line. The login form has a fixed, hidden user name (`admin`), so the browser's
+password manager (Chrome's too) offers to save the password and fills it in next time; changing the password updates
+the saved one.
 
 What it does:
 

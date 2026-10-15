@@ -83,17 +83,19 @@ h1 { font-size: 1.1rem; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
 h1 a { color: inherit; text-decoration: none; }
 h1 a:focus-visible { outline: 2px solid var(--bar-text); outline-offset: 3px; border-radius: 4px; }
 .brand { display: flex; align-items: center; gap: 14px; }
-/* the login picture as the app icon: on a light tile so the black GitHub mark stays visible on the dark bar */
+/* the login picture as the app icon, background transparent: a thin light outline keeps the black GitHub mark
+   visible on the dark bar */
 .brand-logo {
   display: flex;
   align-items: center;
   height: 40px;
-  padding: 4px 8px;
-  background: #ffffff;
-  border-radius: 6px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
 }
-.brand-logo img { display: block; height: 32px; width: auto; }
+.brand-logo img {
+  display: block;
+  height: 32px;
+  width: auto;
+  filter: drop-shadow(0 0 1px #e6e9ef) drop-shadow(0 0 1px #e6e9ef);
+}
 .brand-text { display: flex; align-items: baseline; gap: 10px; }
 h1 .sub {
   color: var(--bar-muted);

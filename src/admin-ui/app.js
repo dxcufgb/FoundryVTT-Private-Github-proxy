@@ -62,11 +62,13 @@
     $('#brand-logo').hidden = true;
     $('#app-footer').hidden = true;
     $('#login-view').hidden = false;
+    document.body.classList.add('logged-out');
     document.title = 'Foundry Release Proxy';
     $('#login-form').password.focus();
   }
 
   function showApp(data) {
+    document.body.classList.remove('logged-out');
     $('#login-view').hidden = true;
     $('#app-view').hidden = false;
     $('#top-actions').hidden = false;

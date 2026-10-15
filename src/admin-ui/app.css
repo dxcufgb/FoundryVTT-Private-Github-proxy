@@ -63,8 +63,11 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ---- top bar ---- */
+/* ---- top bar: stays in view while the page scrolls ---- */
 header {
+  position: sticky;
+  top: 0;
+  z-index: 15;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -158,6 +161,8 @@ header button:focus-visible { outline-color: var(--bar-text); }
 h2 { font-size: 1.15rem; font-weight: 600; margin: 0 0 8px; letter-spacing: 0.005em; }
 main { flex: 1; width: 100%; max-width: 1160px; margin: 0 auto; padding: 32px 24px 40px;
   display: flex; flex-direction: column; }
+/* logged out: a band in the top bar's colour behind the login card */
+body.logged-out { background: linear-gradient(180deg, var(--bar) 0, var(--bar-2) 220px, var(--bg) 220px); }
 /* the login card sits in the middle of the page, both ways */
 #login-view { width: 100%; margin: auto; padding: 32px; border-top: 4px solid var(--accent); box-shadow: var(--shadow-lg); }
 #login-view h2 { font-size: 1.35rem; margin-bottom: 4px; }

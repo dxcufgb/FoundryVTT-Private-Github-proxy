@@ -642,6 +642,17 @@
     }
   }
 
+  // The certificate download (and how to trust it) on the login page, when the admin port's certificate is
+  // self-signed: Chrome saves no passwords on a page whose certificate it warns about.
+  async function showCertHint() {
+    try {
+      const res = await fetch('/_admin/certificate.crt', { method: 'HEAD', credentials: 'same-origin', cache: 'no-store' });
+      $('#cert-hint').hidden = !res.ok;
+    } catch {
+      // no hint
+    }
+  }
+
   async function login(e) {
     e.preventDefault();
     const form = e.currentTarget;
@@ -672,6 +683,7 @@
 
   document.addEventListener('DOMContentLoaded', async () => {
     $('#login-form').addEventListener('submit', login);
+    showCertHint();
     $('#logout').addEventListener('click', logout);
     wireMenu($('#settings-button'), $('#settings-menu'));
     document.addEventListener('click', (e) => {

@@ -526,10 +526,13 @@ set_env_value() {
 # Succeeds when admin.json holds a password (the admin page is on).
 admin_on() { "$NODE_BIN" "$SRC_DIR/src/admin.js" check "$CONF_DIR/admin.json" >/dev/null 2>&1; }
 
-# Self-signed certificate for the admin port (made once; $1 = force makes a new one). root-owned, so the service
-# reads it but cannot change it.
+# Self-signed certificate for the admin port (made once; $1 = force makes a new one; a lone one of an older version
+# is replaced, since browsers cannot trust it). root-owned, so the service reads it but cannot change it.
 make_admin_cert() {
-    if [[ -f "$ADMIN_CERT" && -f "$ADMIN_KEY" && "${1:-}" != force ]]; then return 0; fi
+    if [[ -f "$ADMIN_CERT" && -f "$ADMIN_KEY" && "${1:-}" != force ]]; then
+        if ! "$NODE_BIN" "$SRC_DIR/src/selfsigned.js" --outdated "$ADMIN_CERT"; then return 0; fi
+        echo "Renewing the admin port's certificate, so browsers can trust it (see the admin page's login card)."
+    fi
     local public host=""
     public="$(env_value ADMIN_PUBLIC_URL)"
     if [[ -n "$public" ]]; then
@@ -624,8 +627,9 @@ print_admin_info() {
     public="$(env_value ADMIN_PUBLIC_URL)"
     if [[ -n "$public" ]]; then echo "         $public (public address)"; fi
     if [[ "$scheme" == https && -f "$ADMIN_CERT" ]]; then
-        echo "         self-signed certificate: the browser warns once; its SHA-256 fingerprint is"
-        echo "         $("$NODE_BIN" -e 'console.log(new (require("crypto").X509Certificate)(require("fs").readFileSync(process.argv[1])).fingerprint256)' "$ADMIN_CERT")"
+        echo "         self-signed certificate: the browser warns until you trust its certificate authority (the"
+        echo "         login page links it), whose SHA-256 fingerprint is"
+        echo "         $("$NODE_BIN" "$SRC_DIR/src/selfsigned.js" --fingerprint "$ADMIN_CERT")"
     fi
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
         echo "         the ufw firewall is on: allow the port with: sudo ufw allow $admin_port/tcp"

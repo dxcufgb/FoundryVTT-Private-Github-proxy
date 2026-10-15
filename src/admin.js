@@ -24,6 +24,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
 const { sendMail, isEmail, smtpProblem } = require('./mailer.js');
+const { trustAnchor } = require('./selfsigned.js');
 
 const scrypt = promisify(crypto.scrypt);
 const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 64 };
@@ -53,6 +54,11 @@ const UI_FILES = {
   '/app.css': { file: 'app.css', type: 'text/css; charset=utf-8' },
   '/logo.webp': { file: 'logo.webp', type: 'image/webp' },
 };
+// The certificate authority of the admin port's self-signed certificate (src/selfsigned.js), offered for download:
+// Chrome neither saves nor fills passwords on a page whose certificate it warns about, so the login page tells how to
+// trust it (see setCertificate).
+const CERT_ROUTE = '/certificate.crt';
+const CERT_FILE_NAME = 'foundry-release-proxy.crt';
 const SECURITY_HEADERS = {
   'Content-Security-Policy':
     "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; " +
@@ -369,6 +375,8 @@ function createAdmin({
   for (const [route, { file, type }] of Object.entries(UI_FILES)) {
     ui[route] = { body: fs.readFileSync(path.join(__dirname, 'admin-ui', file)), type };
   }
+
+  let certificate = null; // PEM of the authority to trust for the admin port's certificate (setCertificate), or null
 
   const enabled = () => Boolean(settings.passwordHash);
 
@@ -703,6 +711,11 @@ function createAdmin({
   }
 
   return {
+    /** The admin port's certificate chain (PEM): its own authority is served at /_admin/certificate.crt (trustAnchor). */
+    setCertificate(pem) {
+      certificate = pem ? trustAnchor(pem) : null;
+    },
+
     /** True for every path below /_admin (answered here, or 404 while the page is off). */
     handles: (pathname) => pathname === PREFIX || pathname.startsWith(`${PREFIX}/`),
 
@@ -719,6 +732,15 @@ function createAdmin({
           return send(res, 405, 'method not allowed', { Allow: 'GET, HEAD' });
         }
         return send(res, 200, req.method === 'HEAD' ? undefined : ui[route].body, { 'Content-Type': ui[route].type });
+      }
+      if (route === CERT_ROUTE && certificate) {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          return send(res, 405, 'method not allowed', { Allow: 'GET, HEAD' });
+        }
+        return send(res, 200, req.method === 'HEAD' ? undefined : certificate, {
+          'Content-Type': 'application/x-x509-ca-cert',
+          'Content-Disposition': `attachment; filename="${CERT_FILE_NAME}"`,
+        });
       }
       if (!route.startsWith('/api/')) return send(res, 404, 'not found', { 'Content-Type': 'text/plain; charset=utf-8' });
       try {

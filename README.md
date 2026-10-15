@@ -312,7 +312,10 @@ newer release.
 
 The login form works with password managers (Chrome's built-in one included): it saves the password under the user
 name `admin` (the page has no user names; any would do) and offers it at the next login. Changing the password on the
-**Admin password** page offers to update the saved one.
+**Admin password** page offers to update the saved one. Chrome does that only on a page whose certificate it trusts
+(no *Not secure* warning): on the admin port with its self-signed certificate the login card has **Browser does not
+offer to save the password?**, which links the certificate's authority (`/_admin/certificate.crt`, served without a
+login) and tells how to trust it (see [Trusting the certificate](#trusting-the-certificate)).
 
 What it does:
 
@@ -379,8 +382,8 @@ port below 1024, such as 443, is fine as well: the service then gets the one cap
 
 - **Certificate.** The installer makes a self-signed certificate for the machine's names and addresses
   (`admin-tls.crt` / `admin-tls.key` next to `config.json`, readable by the proxy but owned by root / Administrators).
-  Your browser warns about it once ("not private" / "potential security risk"): compare the SHA-256 fingerprint the
-  installer printed with the one the browser shows, then accept it. A real certificate (your own CA, Let's Encrypt)
+  Your browser warns about it ("not private" / "potential security risk") until you trust it (see below); accepting
+  the warning works too, but then Chrome does not save the password. A real certificate (your own CA, Let's Encrypt)
   goes in `ADMIN_TLS_CERT` and `ADMIN_TLS_KEY` (paths to PEM files the proxy's account can read) in `env`.
 - **Firewall.** Windows: the installer allows the port on private and domain networks. Linux: if `ufw` is on, the
   installer prints the `sudo ufw allow 8788/tcp` you need.
@@ -391,6 +394,25 @@ port below 1024, such as 443, is fine as well: the service then gets the one cap
   `ADMIN_TRUST_PROXY` (`1` = trust `X-Forwarded-For` / `X-Forwarded-Proto` from a reverse proxy on this machine;
   for a reverse proxy on another machine, its address instead, e.g. `192.168.1.5`, comma separated for several).
   Forwarded headers from any other address are ignored, so nobody can fake them to dodge the login lockout.
+
+### Trusting the certificate
+
+Chrome neither saves nor fills passwords on a page whose certificate it warns about. The installer's certificate is a
+pair: a certificate authority made for it alone signs the admin port's certificate, and its private key is thrown away
+at once, so trusting it trusts this admin page and nothing else. Download it from the login card (**Browser does not
+offer to save the password?**, or `/_admin/certificate.crt`), compare its SHA-256 fingerprint with the one the
+installer printed if you like, and add it to the computer's trusted certificates:
+
+- **Windows**: open the file, **Install Certificate**, **Local Machine**, **Place all certificates in the following
+  store**: **Trusted Root Certification Authorities**.
+- **macOS**: open the file (Keychain Access, **System** keychain), open the certificate, **Trust**: **Always Trust**.
+- **Linux, ChromeOS**: `chrome://certificate-manager`, **Local certificates**, **Installed by you**, **Trusted
+  certificates**: **Import**.
+
+Then restart the browser and open the page by a name or address the certificate was made for (the machine's name,
+`<name>.local`, its addresses, `localhost`, `ADMIN_PUBLIC_URL`'s host). A new certificate (`--renew-admin-cert` /
+`-RenewAdminCert`) has to be trusted again. Certificates of version 1.7.3 and older (a lone self-signed one, which
+browsers cannot be told to trust this way) are replaced by the next upgrade.
 
 ### On a public address
 

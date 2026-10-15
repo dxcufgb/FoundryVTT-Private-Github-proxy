@@ -238,9 +238,14 @@ function Test-AdminOn([string]$Node) {
 # True when ADMIN_TLS turns HTTPS off for the admin port.
 function Test-TlsOff { (Get-EnvValue 'ADMIN_TLS') -match '^(off|0|false|no)$' }
 
-# Self-signed certificate for the admin port (made once; -Force makes a new one); LOCAL SERVICE may only read it.
+# Self-signed certificate for the admin port (made once; -Force makes a new one; a lone one of an older version is
+# replaced, since browsers cannot trust it); LOCAL SERVICE may only read it.
 function Write-AdminCert([string]$Node, [switch]$Force) {
-    if ((Test-Path -LiteralPath $AdminCert) -and (Test-Path -LiteralPath $AdminKey) -and -not $Force) { return }
+    if ((Test-Path -LiteralPath $AdminCert) -and (Test-Path -LiteralPath $AdminKey) -and -not $Force) {
+        & $Node (Join-Path $AppDir 'src\selfsigned.js') --outdated $AdminCert
+        if ($LASTEXITCODE -ne 0) { return }
+        Write-ProxyLog "Renewing the admin port's certificate, so browsers can trust it (see the admin page's login card)."
+    }
     $names = @()
     $public = Get-EnvValue 'ADMIN_PUBLIC_URL'
     if ($public) { $names += ([Uri]$public).Host }
@@ -319,10 +324,11 @@ function Write-AdminInfo([string]$Node) {
     if ($public) { Write-ProxyLog "        $public (public address)" }
     if ($scheme -eq 'https' -and (Test-Path -LiteralPath $AdminCert)) {
         try {
-            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $AdminCert
-            Write-ProxyLog "        self-signed certificate: the browser warns once; SHA-1 thumbprint $($cert.Thumbprint)"
+            $fingerprint = & $node (Join-Path $AppDir 'src\selfsigned.js') --fingerprint $AdminCert
+            if ($LASTEXITCODE -ne 0) { throw 'no fingerprint' }
+            Write-ProxyLog "        self-signed certificate: the browser warns until you trust its certificate authority (the login page links it), SHA-256 fingerprint $fingerprint"
         }
-        catch { Write-ProxyLog '        self-signed certificate: the browser warns once' }
+        catch { Write-ProxyLog '        self-signed certificate: the browser warns until you trust its certificate authority (the login page links it)' }
     }
 }
 

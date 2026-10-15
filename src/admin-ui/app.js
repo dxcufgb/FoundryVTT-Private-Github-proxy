@@ -60,7 +60,9 @@
     $('#app-view').hidden = true;
     $('#top-actions').hidden = true;
     $('#brand-logo').hidden = true;
-    $('#app-footer').hidden = true;
+    $('#app-footer').hidden = false;
+    $('#footer-version').hidden = true;
+    $('#footer-actions').hidden = true;
     $('#login-view').hidden = false;
     document.body.classList.add('logged-out');
     document.title = 'Foundry Release Proxy';
@@ -74,6 +76,8 @@
     $('#top-actions').hidden = false;
     $('#brand-logo').hidden = false;
     $('#app-footer').hidden = false;
+    $('#footer-version').hidden = false;
+    $('#footer-actions').hidden = false;
     render(data);
     showPage();
     checkUpdate();

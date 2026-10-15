@@ -187,7 +187,7 @@ test('the admin page is off (404) without a password and needs a login for the A
     assert.equal(page.headers.get('cache-control'), 'no-store');
     const html = await page.text();
     assert.match(html, /Foundry Release Proxy/);
-    assert.match(html, /Built by Dxcufgb 2026/);
+    assert.match(html, /Built by <strong>Dxcufgb<\/strong> 2026/);
     // password managers: the login form has a user name to save the password under, and says which field is which
     const loginForm = html.match(/<form id="login-form"[\s\S]*?<\/form>/)[0];
     assert.match(loginForm, /autocomplete="username"/);

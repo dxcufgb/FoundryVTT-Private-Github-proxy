@@ -152,18 +152,16 @@
     </div>
   </main>
 
-  <!-- on every page; the version and its button only once logged in -->
-  <footer>
-    <div class="footer-app" id="app-footer" hidden>
-      <div class="footer-text">
-        <p id="version-status"></p>
-        <p id="version-note" class="small" hidden></p>
-      </div>
-      <div class="buttons">
-        <button type="button" id="update-check" class="secondary small">Check for update</button>
-      </div>
+  <!-- logged out: only the credit line; logged in: also the version and "Check for update" -->
+  <footer id="app-footer" hidden>
+    <div class="footer-text" id="footer-version" hidden>
+      <p id="version-status"></p>
+      <p id="version-note" class="small" hidden></p>
     </div>
-    <p class="footer-credit">Foundry Release Proxy <span aria-hidden="true">·</span> Built by Dxcufgb 2026</p>
+    <p class="footer-credit">Built by <strong>Dxcufgb</strong> 2026</p>
+    <div class="buttons" id="footer-actions" hidden>
+      <button type="button" id="update-check" class="secondary small">Check for update</button>
+    </div>
   </footer>
 
   <dialog id="token-dialog" aria-labelledby="token-dialog-title">

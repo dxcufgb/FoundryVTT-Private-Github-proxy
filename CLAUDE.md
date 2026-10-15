@@ -25,8 +25,8 @@ installs new releases of the proxy itself.
 - `src/admin.js` – the password-protected admin page (`/_admin/`, UI files in `src/admin-ui/`: one HTML page whose views
   are picked by the URL fragment, `#/` modules and `#/token`, `#/notifications`, `#/password`, all in the cogwheel menu
   with the current page highlighted; with a token in use the token page shows a checkmark and "Add new token" (a dialog);
-  each module's actions (Copy link, Check release, Edit, Delete) are in its row's "⋯" menu; the footer holds the version
-  and "Check for update", which opens the "Update now / Not now" dialog when a newer release exists): JSON API to list/add/edit/
+  each module's actions (Copy link, Check release, Edit, Delete) are in its row's "⋯" menu; the footer (also on the login page, without
+  the version and button) holds "Built by Dxcufgb 2026", the version and "Check for update", which opens the "Update now / Not now" dialog when a newer release exists): JSON API to list/add/edit/
   delete modules (validated with `parseConfig`, written back to `config.json` in place), the GitHub token (`PUT
   /api/token`: format check, GitHub must accept it, then the `GITHUB_TOKEN` line of `env` (`ENV_FILE`, default next to
   `CONFIG_FILE`) is rewritten in place and the proxy switches over; `POST /api/setup-test`: the token, the proxy's own

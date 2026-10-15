@@ -10,7 +10,11 @@
 </head>
 <body>
   <header>
-    <h1><a href="#/" id="home-link">Foundry Release Proxy <span class="sub">administration</span></a></h1>
+    <h1><a href="#/" id="home-link" class="brand">
+      <!-- the login page's picture, small: only once logged in (the login card shows it large) -->
+      <span class="brand-logo" id="brand-logo" hidden><img src="/_admin/logo.webp" width="640" height="179" alt=""></span>
+      <span class="brand-text">Foundry Release Proxy <span class="sub">Administration</span></span>
+    </a></h1>
     <nav class="top-actions" id="top-actions" hidden aria-label="Settings and session">
       <div class="menu-wrap">
         <button type="button" id="settings-button" class="icon-button secondary" aria-haspopup="menu"
@@ -41,10 +45,14 @@
       <img class="login-logo" src="/_admin/logo.webp" width="640" height="179"
         alt="Foundry VTT, the proxy and GitHub, with arrows both ways between them">
       <h2>Log in</h2>
-      <form id="login-form">
-        <label>Password <input type="password" name="password" autocomplete="current-password" required autofocus></label>
+      <p class="hint">Sign in with the admin password to manage modules, the GitHub token and notifications.</p>
+      <!-- the hidden user name gives password managers (Chrome's too) an account to save the password under -->
+      <form id="login-form" method="post">
+        <input type="text" name="username" value="admin" autocomplete="username" class="sr-only" tabindex="-1"
+          aria-hidden="true" readonly>
+        <label>Password <input type="password" name="password" id="login-password" autocomplete="current-password" required autofocus></label>
         <p class="error" id="login-error" hidden></p>
-        <button type="submit">Log in</button>
+        <button type="submit" class="wide">Log in</button>
       </form>
     </section>
 
@@ -132,7 +140,9 @@
       <section class="card narrow centered page" data-page="password" hidden>
         <p class="back"><a href="#/">← Modules</a></p>
         <h2>Admin password</h2>
-        <form id="password-form">
+        <form id="password-form" method="post">
+        <input type="text" name="username" value="admin" autocomplete="username" class="sr-only" tabindex="-1"
+          aria-hidden="true" readonly>
           <label>Current password <input type="password" name="current" autocomplete="current-password" required></label>
           <label>New password <input type="password" name="password" autocomplete="new-password" minlength="8" required></label>
           <label>Repeat new password <input type="password" name="repeat" autocomplete="new-password" minlength="8" required></label>
@@ -142,14 +152,18 @@
     </div>
   </main>
 
-  <footer id="app-footer" hidden>
-    <div class="footer-text">
-      <p id="version-status"></p>
-      <p id="version-note" class="small" hidden></p>
+  <!-- on every page; the version and its button only once logged in -->
+  <footer>
+    <div class="footer-app" id="app-footer" hidden>
+      <div class="footer-text">
+        <p id="version-status"></p>
+        <p id="version-note" class="small" hidden></p>
+      </div>
+      <div class="buttons">
+        <button type="button" id="update-check" class="secondary small">Check for update</button>
+      </div>
     </div>
-    <div class="buttons">
-      <button type="button" id="update-check" class="secondary small">Check for update</button>
-    </div>
+    <p class="footer-credit">Foundry Release Proxy <span aria-hidden="true">·</span> Built by Dxcufgb 2026</p>
   </footer>
 
   <dialog id="token-dialog" aria-labelledby="token-dialog-title">

@@ -185,7 +185,13 @@ test('the admin page is off (404) without a password and needs a login for the A
     assert.match(page.headers.get('content-security-policy'), /script-src 'self'/);
     assert.equal(page.headers.get('x-frame-options'), 'DENY');
     assert.equal(page.headers.get('cache-control'), 'no-store');
-    assert.match(await page.text(), /Foundry Release Proxy/);
+    const html = await page.text();
+    assert.match(html, /Foundry Release Proxy/);
+    assert.match(html, /Built by Dxcufgb 2026/);
+    // password managers: the login form has a user name to save the password under, and says which field is which
+    const loginForm = html.match(/<form id="login-form"[\s\S]*?<\/form>/)[0];
+    assert.match(loginForm, /autocomplete="username"/);
+    assert.match(loginForm, /type="password"[^>]*autocomplete="current-password"/);
     assert.equal((await fetch(`${s.url}/_admin/app.js`)).status, 200);
     const logo = await fetch(`${s.url}/_admin/logo.webp`);
     assert.equal(logo.status, 200);

@@ -59,16 +59,20 @@
     closeMenu();
     $('#app-view').hidden = true;
     $('#top-actions').hidden = true;
+    $('#brand-logo').hidden = true;
     $('#app-footer').hidden = true;
     $('#login-view').hidden = false;
+    document.body.classList.add('logged-out');
     document.title = 'Foundry Release Proxy';
     $('#login-form').password.focus();
   }
 
   function showApp(data) {
+    document.body.classList.remove('logged-out');
     $('#login-view').hidden = true;
     $('#app-view').hidden = false;
     $('#top-actions').hidden = false;
+    $('#brand-logo').hidden = false;
     $('#app-footer').hidden = false;
     render(data);
     showPage();
@@ -603,6 +607,19 @@
     }
   }
 
+  // Offers the password to the browser's password manager once the proxy accepted it. The form (with its hidden user
+  // name) lets Chrome and others notice the login by themselves; this asks explicitly where the browser can (Chrome,
+  // Edge: secure contexts, which includes localhost). Saving is up to the user; a refusal changes nothing.
+  function rememberPassword(password) {
+    if (typeof window.PasswordCredential !== 'function' || !navigator.credentials) return;
+    try {
+      const credential = new window.PasswordCredential({ id: 'admin', password, name: 'Foundry Release Proxy' });
+      navigator.credentials.store(credential).catch(() => {});
+    } catch {
+      // not offered: nothing to do
+    }
+  }
+
   async function changePassword(e) {
     e.preventDefault();
     const form = e.currentTarget;
@@ -611,8 +628,10 @@
       return;
     }
     try {
-      render(await call('PUT', 'password', { current: form.current.value, password: form.password.value }));
+      const password = form.password.value;
+      render(await call('PUT', 'password', { current: form.current.value, password }));
       form.reset();
+      rememberPassword(password);
       toast('Password changed. Other sessions were logged out.');
     } catch (err) {
       toast(err.message, true);
@@ -625,9 +644,12 @@
     const error = $('#login-error');
     error.hidden = true;
     try {
-      const data = await call('POST', 'login', { password: form.password.value });
-      form.reset();
+      const password = form.password.value;
+      const data = await call('POST', 'login', { password });
+      // the form disappears first (how password managers tell a login went through), then the field is emptied
       showApp(data);
+      form.reset();
+      rememberPassword(password);
     } catch (err) {
       error.textContent = err.message;
       error.hidden = false;

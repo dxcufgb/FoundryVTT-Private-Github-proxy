@@ -15,7 +15,9 @@ installs new releases of the proxy itself.
   mail; an unreachable GitHub is retried an hour later before it is mailed. Exports `createApp`, `loadConfig`, `parseConfig`, `ConfigError`;
   `main()` only runs when executed directly. Hands `/_admin` to `src/admin.js` when the admin page is on. With
   `ADMIN_PORT` it also opens the browser admin port (`server.createAdminServer(tls)`): only admin routes, HTTPS (a TLS
-  first byte goes to https, anything else gets a 301 to https://), `/` → `/_admin/`.
+  first byte goes to https, anything else gets a 301 to https://), `/` → `/_admin/`, and a self-signed certificate (only
+  the certificate) at `/_admin/certificate.crt`, which the login page links (Chrome saves no passwords on an untrusted
+  certificate).
 - `src/zippatch.js` – rewrites the `module.json` inside a zip without unpacking or buffering it: reads the end record and
   central directory, finds the top-level (or single-folder) `module.json`, and builds what follows the unchanged prefix
   (a new local entry, the central directory pointing at it, a new end record). Refuses (`ZipPatchError`) ZIP64,

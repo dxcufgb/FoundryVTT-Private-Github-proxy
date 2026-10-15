@@ -21,6 +21,7 @@ Foundry ──download URL──▶ proxy ◀── pre-signed GitHub URL (no to
 | `GET /<module-id>/<tag>/module.zip` | that tag's zip with its `module.json` pointing at the proxy ([why](#module-zips-and-updates)); `302` to the pre-signed GitHub download when it cannot be patched or `PATCH_ZIPS=off` |
 | `/_admin/` and `/_admin/api/...` | the [administration page](#administration-page) (`404` while it has no password) |
 | anything on `ADMIN_PORT` (if set) | the admin page only, over HTTPS: `/` → `302 /_admin/`, plain `http://` → `301 https://` |
+| `GET /_admin/certificate.crt` on `ADMIN_PORT` | the port's self-signed certificate (never the key), to [trust it](#trusting-the-certificate); `404` for a certificate from a real CA, on plain HTTP and on the proxy's own port |
 | `POST`/`PUT`/`DELETE` outside `/_admin/` | `405` (the proxy routes are `GET`/`HEAD` only) |
 | anything else / unknown module / missing asset or release | `404` |
 | GitHub error | `502` (log shows module id and GitHub status, never the token) |
@@ -312,7 +313,10 @@ newer release.
 
 The login form works with password managers (Chrome's built-in one included): it saves the password under the user
 name `admin` (the page has no user names; any would do) and offers it at the next login. Changing the password on the
-**Admin password** page offers to update the saved one.
+**Admin password** page offers to update the saved one. Chrome (and Edge) save and fill passwords only on pages whose
+certificate they trust: on the [admin port](#the-admin-page-in-your-browser-like-webmin) with its self-signed
+certificate they never offer it until you [trust the certificate](#trusting-the-certificate); the login page says so
+there and links the certificate. `http://localhost:8787/_admin/` and a real certificate need nothing.
 
 What it does:
 
@@ -391,6 +395,26 @@ port below 1024, such as 443, is fine as well: the service then gets the one cap
   `ADMIN_TRUST_PROXY` (`1` = trust `X-Forwarded-For` / `X-Forwarded-Proto` from a reverse proxy on this machine;
   for a reverse proxy on another machine, its address instead, e.g. `192.168.1.5`, comma separated for several).
   Forwarded headers from any other address are ignored, so nobody can fake them to dodge the login lockout.
+
+#### Trusting the certificate
+
+Browsers save no passwords on a page whose certificate they do not trust (Chrome and Edge turn their password manager
+off after a certificate warning), so to have the admin password saved, make the browser trust the proxy's self-signed
+certificate. Download it with **Download the certificate** on the login page (`https://<this machine>:8788/_admin/certificate.crt`;
+it is the same `admin-tls.crt` the installer wrote) and check that its SHA-256 fingerprint is the one the installer
+printed. Then, on each computer that opens the page:
+
+- **Windows** (Chrome, Edge): open the file → **Install Certificate…** → *Current User* → *Place all certificates in the
+  following store* → **Trusted Root Certification Authorities** → **Finish** and confirm.
+- **macOS** (Chrome, Safari): open the file (Keychain Access adds it to *login*), double-click the certificate, under
+  **Trust** set *When using this certificate* to **Always Trust**.
+- **Linux** (Chrome): `certutil -d sql:$HOME/.pki/nssdb -A -t "P,," -n foundry-release-proxy -i foundry-release-proxy.crt`
+  (`certutil` is in `libnss3-tools`). Firefox: *Settings → Privacy & Security → View Certificates… → Servers → Add
+  Exception…*.
+
+Restart the browser and open the page with a name or address the certificate holds (the ones the installer printed),
+log in, and the browser offers to save the password. A renewed certificate (`--renew-admin-cert`) has to be trusted
+again. If the browser still does not ask, the site may be on its *Never saved* list (Chrome: *Settings → Passwords*).
 
 ### On a public address
 
@@ -692,6 +716,8 @@ are on.
   (`sudo ufw allow 8788/tcp`; Windows allows private and domain networks only) and the log line `admin page for the
   browser: ...` at startup. Behind a reverse proxy: logins that always fail with `Secure` cookies over plain http mean
   `X-Forwarded-Proto` is missing or `ADMIN_TRUST_PROXY=1` is not set.
+- The browser never offers to save the admin password on the admin port: it does not trust the self-signed
+  certificate; see [Trusting the certificate](#trusting-the-certificate).
 - No notification e-mails: use **Send test e-mail** on the admin page; its error names the SMTP step that failed.
   The update log (`journalctl -u foundry-release-proxy-update`, `auto-update.log`) shows `notify: ...` lines.
 - Automatic update fails with `HTTP 404`: the updater's token cannot see this repository (add it to the token's

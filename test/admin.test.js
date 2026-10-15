@@ -192,6 +192,10 @@ test('the admin page is off (404) without a password and needs a login for the A
     const loginForm = html.match(/<form id="login-form"[\s\S]*?<\/form>/)[0];
     assert.match(loginForm, /autocomplete="username"/);
     assert.match(loginForm, /type="password"[^>]*autocomplete="current-password"/);
+    // Chrome saves no passwords where it distrusts the certificate: the login page links the admin port's own one
+    assert.match(html, /id="cert-hint" hidden[\s\S]*?href="\/_admin\/certificate.crt"/);
+    // the proxy's own port has no certificate to offer
+    assert.equal((await fetch(`${s.url}/_admin/certificate.crt`)).status, 404);
     assert.equal((await fetch(`${s.url}/_admin/app.js`)).status, 200);
     const logo = await fetch(`${s.url}/_admin/logo.webp`);
     assert.equal(logo.status, 200);

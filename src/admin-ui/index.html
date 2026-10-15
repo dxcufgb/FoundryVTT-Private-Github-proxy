@@ -54,6 +54,13 @@
         <p class="error" id="login-error" hidden></p>
         <button type="submit" class="wide">Log in</button>
       </form>
+      <!-- shown only on the admin port with its self-signed certificate (app.js): Chrome saves no passwords until it
+        trusts the certificate -->
+      <p class="hint cert-hint" id="cert-hint" hidden>Browser not offering to save the password? Browsers only save
+        passwords on pages whose certificate they trust, and this page uses the proxy's own.
+        <a href="/_admin/certificate.crt" download="foundry-release-proxy.crt">Download the certificate</a>, add it to
+        your trusted certificates (<a href="https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy#trusting-the-certificate"
+        target="_blank" rel="noopener noreferrer">how</a>), then restart the browser.</p>
     </section>
 
     <div id="app-view" hidden>

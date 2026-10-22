@@ -108,6 +108,13 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      # "Update proxy now" below starts a real update run, which reads this public repository's releases without the
+      # fake token: with a version newer than any release it finds nothing to install, so the job keeps testing this commit.
+      - name: Stamp a version newer than any release
+        run: |
+          sed -i '0,/"version": *"[^"]*"/s//"version": "999.0.0"/' package.json
+          grep -q '"version": "999.0.0"' package.json
+
       - name: Install with the system Node.js
         run: sudo --preserve-env=FOUNDRY_PROXY_GITHUB_TOKEN,FOUNDRY_PROXY_ADMIN_PASSWORD,FOUNDRY_PROXY_ADMIN_WEB ./install.sh --module demo=octo/demo
 
@@ -144,8 +151,8 @@ jobs:
             -H "X-CSRF-Token: $csrf" -d '{"token":"github_pat_ci_also_not_a_real_token"}' "$api/token")" = 400
           test "$(sudo sha256sum /etc/foundry-release-proxy/env)" = "$before"
           test "$(sudo stat -c '%a %U' /etc/foundry-release-proxy/env)" = "600 foundry-proxy"
-          # "Update proxy now": the request file starts the root update service through the path unit (the update
-          # itself fails here: the token is fake)
+          # "Update proxy now": the request file starts the root update service through the path unit (it finds no
+          # newer release: the version stamped above)
           systemctl is-active foundry-release-proxy-update-now.path
           test "$(sudo stat -c '%a %U' /etc/foundry-release-proxy/update-request)" = "600 foundry-proxy"
           curl -sf -b "$RUNNER_TEMP/jar" "$api/update" | jq -e '.canUpdate and .installed != null'
@@ -247,7 +254,8 @@ jobs:
 
       - name: Build the installer
         shell: powershell
-        run: .\packaging\windows\build-installer.ps1 -OutDir dist
+        # 999.0.0: newer than any release, so the smoke test's "Update proxy now" run installs nothing (see linux-install)
+        run: .\packaging\windows\build-installer.ps1 -OutDir dist -Version 999.0.0
 
       - name: Install, check and uninstall it
         shell: powershell

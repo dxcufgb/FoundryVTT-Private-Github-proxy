@@ -5,12 +5,14 @@
 // Installing is left to the install scripts. A newer release without these files (only releases before 1.2.0 have
 // the old names) is reported as an error and nothing is installed; there is no fallback to the old names.
 //
-//   node src/updater.js --check    --token-file FILE [--app-dir DIR]
-//   node src/updater.js --download DIR --token-file FILE [--app-dir DIR] [--format tar.gz|zip]
+//   node src/updater.js --check    [--token-file FILE] [--app-dir DIR]
+//   node src/updater.js --download DIR [--token-file FILE] [--app-dir DIR] [--format tar.gz|zip]
 //
 // Exit codes: 0 = up to date, 10 = newer release available (--check) or downloaded (--download), 1 = error.
-// The token is read from FILE (a `GITHUB_TOKEN=...` line, as in the proxy's env file, or the bare token) or from
-// the UPDATER_GITHUB_TOKEN environment variable. It is only ever sent to api.github.com and never printed.
+// The repository is public, so no token is needed. One is used when given (GitHub then allows more API requests than
+// the 60 an hour per IP address it allows without one): read from FILE (a `GITHUB_TOKEN=...` line, as in the proxy's
+// env file, or the bare token) or from the UPDATER_GITHUB_TOKEN environment variable. When GitHub refuses it (expired,
+// revoked, no access), the run continues without it. It is only ever sent to api.github.com and never printed.
 // No dependencies: built-in fs, path, crypto and fetch only.
 
 const fs = require('node:fs');
@@ -110,13 +112,31 @@ function parseTokenFile(text) {
   return token === 'REPLACE_ME' || token === 'github_pat_REPLACE_ME' ? '' : token;
 }
 
-/** Create release lookup, check and download helpers using a required token and injectable fetch/logger. */
-function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REPO }) {
-  if (!token) throw new UpdateError('no GitHub token for the updater (see README, "Automatic updates")');
+/**
+ * A clear error for GitHub's API rate limit (HTTP 429, or 403 with no requests left / Retry-After), else null.
+ * `authed`: whether the request carried a token (without one GitHub allows 60 API requests an hour per IP address).
+ */
+function rateLimitError(res, what, authed) {
+  const limited =
+    res.status === 429 ||
+    (res.status === 403 && (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.has('retry-after')));
+  if (!limited) return null;
+  const reset = Number(res.headers.get('x-ratelimit-reset'));
+  const when = reset > 0 && reset < 1e11 ? `, it resets at ${new Date(reset * 1000).toISOString()}` : '';
+  const hint = authed
+    ? ''
+    : ' (without a token GitHub allows 60 API requests an hour per IP address; a token for the updater raises that)';
+  return new UpdateError(`${what}: GitHub's API rate limit is reached (HTTP ${res.status})${hint}${when}; try again later`);
+}
 
-  /** Build GitHub API headers with the updater token and the requested response media type. */
+/** Create release lookup, check and download helpers; the token is optional. Injectable fetch/logger. */
+function createUpdater({ token = '', fetchImpl = fetch, log = console.log, repo = REPO }) {
+  // Whether API requests carry the token: dropped for the rest of the run once GitHub refuses it.
+  let useToken = Boolean(token);
+
+  /** Build GitHub API headers (with the updater token, if any) and the requested response media type. */
   const apiHeaders = (accept) => ({
-    Authorization: `Bearer ${token}`,
+    ...(useToken ? { Authorization: `Bearer ${token}` } : {}),
     Accept: accept,
     'X-GitHub-Api-Version': '2022-11-28',
     'User-Agent': `${PACKAGE}-updater`,
@@ -162,18 +182,28 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
 
   /** Fetch and parse the latest release within the size cap; throw UpdateError on lookup or data errors. */
   async function latestRelease() {
-    const res = await request(
-      `${GITHUB_API}/repos/${repo}/releases/latest`,
-      { headers: apiHeaders('application/vnd.github+json') },
-      API_TIMEOUT_MS,
-      'release lookup',
-    );
-    if (res.status === 404) {
+    const lookup = () =>
+      request(
+        `${GITHUB_API}/repos/${repo}/releases/latest`,
+        { headers: apiHeaders('application/vnd.github+json') },
+        API_TIMEOUT_MS,
+        'release lookup',
+      );
+    let res = await lookup();
+    if (useToken && [401, 403, 404].includes(res.status) && !rateLimitError(res, '', true)) {
+      // The repository is public: a token GitHub refuses (expired, revoked, no access) must not stop the update.
       await res.body?.cancel?.();
-      throw new UpdateError('no published release found, or the token cannot read this repository (HTTP 404)');
+      log(`GitHub refused the updater's token (HTTP ${res.status}); continuing without it`);
+      useToken = false;
+      res = await lookup();
     }
     if (!res.ok) {
       await res.body?.cancel?.();
+      const limit = rateLimitError(res, 'release lookup', useToken);
+      if (limit) throw limit;
+      if (res.status === 404) {
+        throw new UpdateError('no published release found, or the repository is not readable (HTTP 404)');
+      }
       throw new UpdateError(`release lookup failed (HTTP ${res.status})`);
     }
     let release;
@@ -187,7 +217,7 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
     return release;
   }
 
-  /** Release asset via the API URL: token on the API request only, the redirect target is fetched WITHOUT it. */
+  /** Release asset via the API URL: a token only on the API request, the redirect target is fetched WITHOUT it. */
   async function downloadAsset(asset, limit) {
     const what = `download of ${asset.name}`;
     if (typeof asset.url !== 'string' || !asset.url.startsWith(`${GITHUB_API}/repos/${repo}/releases/assets/`)) {
@@ -213,7 +243,7 @@ function createUpdater({ token, fetchImpl = fetch, log = console.log, repo = REP
     }
     if (!res.ok) {
       await res.body?.cancel?.();
-      throw new UpdateError(`${what} failed (HTTP ${res.status})`);
+      throw rateLimitError(res, what, useToken) || new UpdateError(`${what} failed (HTTP ${res.status})`);
     }
     return readCapped(res, limit, what);
   }
@@ -276,6 +306,7 @@ async function main(argv = process.argv.slice(2), { env = process.env, fetchImpl
   try {
     const opts = parseArgs(argv);
     archiveName('0.0.0', opts.format);
+    // Optional: the repository is public. A named token file that cannot be read is still an error.
     let token = env.UPDATER_GITHUB_TOKEN || '';
     if (!token && opts.tokenFile) {
       try {

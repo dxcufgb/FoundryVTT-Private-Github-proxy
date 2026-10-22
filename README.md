@@ -80,8 +80,7 @@ read). Without the admin page: `sudo nano /etc/foundry-release-proxy/env`, repla
 curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s foundry-release-proxy
 ```
 
-This repository is private, so the one-liner asks for a fine-grained GitHub token with read-only *Contents* access to
-this repository (it only uses it to download the release). Or download `foundry-release-proxy-linux.tar.gz` from the
+Or download `foundry-release-proxy-linux.tar.gz` from the
 [latest release](https://github.com/dxcufgb/FoundryVTT-Private-Github-proxy/releases/latest) and run:
 
 ```bash
@@ -105,7 +104,7 @@ Options of this installer: `--module ID=OWNER/REPO` (first install: put this mod
 `--install-node` / `--no-install-node` (download Node.js without asking / never), `--set-admin-password` and
 `--set-notify` (see [administration page](#administration-page)), and the older name `--check` (= `--check-update`).
 A first install also asks for the admin page password and the notification e-mails (Enter skips both). Tokens are never taken as arguments: the proxy's token comes from a hidden prompt or
-`FOUNDRY_PROXY_GITHUB_TOKEN`, the updater's from `UPDATER_GITHUB_TOKEN` or `INSTALL_GITHUB_TOKEN` (see
+`FOUNDRY_PROXY_GITHUB_TOKEN`, the updater's optional one from `UPDATER_GITHUB_TOKEN` or `INSTALL_GITHUB_TOKEN` (see
 [automatic updates](#automatic-updates)). With `--yes`, a first install needs `FOUNDRY_PROXY_GITHUB_TOKEN`, and Node.js is
 downloaded if none is usable.
 
@@ -331,11 +330,12 @@ What it does:
   itself. Adding first asks GitHub whether it accepts the token (a mistyped or revoked one is refused and
   nothing changes), then rewrites the `GITHUB_TOKEN` line of `env` in place and switches the proxy over without a
   restart; automatic updates that use the proxy's token pick it up from there too. **Test setup** checks the token
-  (whose it is, when it expires) and then every repository: this proxy's own repository (needed for automatic updates
-  unless they have their own updater token) and each module's (can the token see it, is there a published release,
-  does it have the manifest and zip assets). The line below shows the result of the last [daily check](#daily-check).
-- **Version and update** (footer): the installed version and the latest release (when the proxy's token can see this
-  repository) and **Check for update**. When a newer release exists, it asks whether to update the proxy now (**Update
+  (whose it is, when it expires) and then every repository: this proxy's own repository (automatic updates and **Check
+  for update** read its releases; it is public, so when the token cannot see it, it is read without the token and
+  counts as fine) and each module's (can the token see it, is there a published release, does it have the manifest
+  and zip assets). The line below shows the result of the last [daily check](#daily-check).
+- **Version and update** (footer): the installed version and the latest release of this repository (read with the
+  proxy's token, or without one when GitHub refuses it) and **Check for update**. When a newer release exists, it asks whether to update the proxy now (**Update
   now** / **Not now**); **Update now** installs it right away instead of waiting for the daily
   [automatic update](#automatic-updates) or logging in to the machine. See [Update proxy now](#update-proxy-now).
 - **Notifications** (settings menu): the e-mail addresses that hear about automatic updates and daily-check problems (see below), the
@@ -491,9 +491,9 @@ admin page with the token in use. When something is wrong it e-mails the [notifi
 recipients in `admin.json`, every day until it is fixed, and once more when everything is fine again:
 
 - GitHub no longer accepts the token (expired, revoked), or it expires within 14 days;
-- the token can no longer see this proxy's own repository, which automatic updates read with it (only once it has been
-  seen to read it since the proxy started: an install whose token was never given that repository, because automatic
-  updates are off or have their own updater token, gets no e-mail about it; **Test setup** still shows it);
+- this proxy's own repository, whose releases automatic updates read, can no longer be read, with the token or
+  without one (it is public; only once it has been read since the proxy started, so an install that never could, e.g.
+  without access to GitHub's API, gets no e-mail about it every day; **Test setup** still shows it);
 - the token cannot see a module repository, or its latest release is missing or lacks the manifest or zip asset.
 
 Subject `Foundry release proxy (<host name>): setup problems` (or `...: setup OK again`), with the problems and the
@@ -560,25 +560,27 @@ fails, the previous version is reinstalled from that copy and checked to be runn
 log says `ROLLBACK FAILED` with the command to reinstall it by hand from the `.prev` folder. A lock (`flock` / a named mutex) stops two runs at once.
 `config.json`, `env` and their owners, modes and ACLs are never changed by an update.
 
-**Token for the updater.** This repository is private, so the updater needs a GitHub token that can read its releases.
-When you turn updates on you can:
+**Token for the updater (optional).** This repository is public, so the updater needs no GitHub token: without one it
+reads the releases anonymously, which GitHub allows 60 API requests an hour per IP address (an update run needs at
+most three). A token is still used when there is one, and existing installs keep working as before:
 
-- reuse the proxy's own `GITHUB_TOKEN` from `env` (the default): add `dxcufgb/FoundryVTT-Private-Github-proxy` to that
-  token's **Repository access**, keeping **Contents: Read-only**. The proxy itself then can also see this repository,
-  which is harmless (it only serves the repos listed in `config.json`); or
-- give the updater its own fine-grained token (only this repository, **Contents: Read-only**): answer `n` to the
-  question, or set `UPDATER_GITHUB_TOKEN` in the environment before running the installer (on Linux pass it through
-  sudo with `sudo --preserve-env=UPDATER_GITHUB_TOKEN ...`; never put it on the command line). It is stored in
-  `/etc/foundry-release-proxy/updater-token` (root, `600`) or `C:\ProgramData\FoundryReleaseProxy\updater-token`
-  (Administrators and SYSTEM only). Turning updates off or uninstalling deletes it.
+- by default the updater reads the proxy's own `GITHUB_TOKEN` from `env`. It does not need access to this repository:
+  when GitHub refuses it for this repository (no access, expired, revoked), the update log says
+  `GitHub refused the updater's token (HTTP ...); continuing without it` and the run goes on without a token;
+- or give the updater a token of its own (any fine-grained token; public repositories are readable with every token):
+  answer `y` to the optional question, or set `UPDATER_GITHUB_TOKEN` in the environment before running the installer
+  (on Linux pass it through sudo with `sudo --preserve-env=UPDATER_GITHUB_TOKEN ...`; never put it on the command
+  line). It is stored in `/etc/foundry-release-proxy/updater-token` (root, `600`) or
+  `C:\ProgramData\FoundryReleaseProxy\updater-token` (Administrators and SYSTEM only). Turning updates off or
+  uninstalling deletes it.
 
-The one-line Linux installer exports the token it downloaded the release with as `INSTALL_GITHUB_TOKEN`; that token
-can read this repository, so when you turn automatic updates on, `install.sh` stores it as the updater token (asking
-first when interactive; with `--yes` it does so without asking). An updater token that is already configured is kept.
+If the one-line Linux installer was given a token, it exports it as `INSTALL_GITHUB_TOKEN`; when you turn automatic
+updates on, `install.sh` stores it as the updater token (asking first when interactive; with `--yes` it does so
+without asking). An updater token that is already configured is kept. Nothing about the updater's token ever stops an
+install or `--yes` to ask.
 
-The token is only sent to `api.github.com` and is never logged. When it expires, save a new one on the admin page (it
-goes into `env`), or update `updater-token` if the updater has its own; a failing check shows up in the update log as
-`HTTP 401`/`HTTP 404`, and the [daily check](#daily-check) warns about the proxy's token before it lapses.
+A token is only sent to `api.github.com` and is never logged. When GitHub's rate limit is reached (HTTP 403 or 429),
+the update log says `GitHub's API rate limit is reached` with the time it resets, and the next daily run tries again.
 
 **Limits.** The checksum guards against corrupted or truncated downloads; it comes from the same release, so it does
 not protect against someone who can publish releases in this repository. Updates restart the proxy (a few seconds of
@@ -588,7 +590,7 @@ downtime). The previous version stays in the `.prev` folder until the next updat
 
 **Check for update** in the admin page's footer asks GitHub for the latest release; when it is newer, a dialog asks
 whether to update the proxy now. **Update now** runs the same update as the daily automatic update, at once, whether or not
-automatic updates are turned on: same token (`TOKEN_FILE` in `auto-update.conf`, else the proxy's `env`), same checks
+automatic updates are turned on: same optional token (`TOKEN_FILE` in `auto-update.conf`, else the proxy's `env`), same checks
 (only a strictly newer, checksum-verified release; rollback on failure), same log and the same notification e-mail.
 The proxy restarts when a newer version was installed, which ends every admin login; the page waits for that and
 asks you to log in again. An update can be requested again after two minutes.
@@ -640,7 +642,7 @@ runs 1.2.0 or newer. From 1.2.0 on, the updaters use only the new names (`-linux
 The release notes start with a download table per OS (`scripts/release-notes.sh`: links to this release's files, the
 always-latest links and the Linux install commands), followed by GitHub's list of merged pull requests.
 
-**Stable per-OS links** (you have to be signed in to GitHub with access to this private repository):
+**Stable per-OS links**:
 
 | OS | Link |
 | --- | --- |
@@ -661,8 +663,8 @@ CI also runs `install.sh` on an Ubuntu runner and the Windows installer on a Win
 
 `npm test` runs the unit tests (no dependencies to install).
 
-The **Security** workflow (`.github/workflows/security.yml`; GitHub's secret scanning and CodeQL are not available for
-this private repository) runs on every pull request, on pushes to `main` and weekly: `Secrets (gitleaks)` scans the
+The **Security** workflow (`.github/workflows/security.yml`; this repository is public, so GitHub's own secret scanning
+and CodeQL (default setup) run on it too) runs on every pull request, on pushes to `main` and weekly: `Secrets (gitleaks)` scans the
 whole git history, `Code (Semgrep)` runs the Semgrep registry rules, `Dependencies` checks that the proxy still has no
 npm dependencies (nothing to audit). The same checks locally (gitleaks 8.30.1, semgrep 1.180.0):
 
@@ -720,5 +722,10 @@ are on.
   certificate; see [Trusting the certificate](#trusting-the-certificate).
 - No notification e-mails: use **Send test e-mail** on the admin page; its error names the SMTP step that failed.
   The update log (`journalctl -u foundry-release-proxy-update`, `auto-update.log`) shows `notify: ...` lines.
-- Automatic update fails with `HTTP 404`: the updater's token cannot see this repository (add it to the token's
-  repository access) or no release has been published yet.
+- Automatic update fails with `HTTP 404`: no release has been published yet (a token GitHub refuses is dropped and the
+  lookup repeated without it). `rate limit is reached`: more than 60 anonymous API requests an hour came from this IP
+  address; wait for the reset time in the message, or give the updater a token.
+
+## License
+
+[MIT](LICENSE), Copyright (c) 2026 Dxcufgb.

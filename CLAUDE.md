@@ -32,7 +32,8 @@ installs new releases of the proxy itself.
   delete modules (validated with `parseConfig`, written back to `config.json` in place), the GitHub token (`PUT
   /api/token`: format check, GitHub must accept it, then the `GITHUB_TOKEN` line of `env` (`ENV_FILE`, default next to
   `CONFIG_FILE`) is rewritten in place and the proxy switches over; `POST /api/setup-test`: the token, the proxy's own
-  repo and every module repo, with the typed token or the one in use), "Update proxy now" (`GET /api/update`: installed and
+  repo (public: read without the token when the token cannot see it) and every module repo, with the typed token or the
+  one in use), "Update proxy now" (`GET /api/update`: installed and
   latest version; `POST /api/update`, at most every 2 minutes: asks the root/SYSTEM updater to run through the injected
   `updateTrigger`: Linux `fileUpdateTrigger` rewrites `update-request`, which the installer's systemd path unit
   `foundry-release-proxy-update-now.path` watches; Windows `taskUpdateTrigger` runs the SYSTEM task
@@ -45,7 +46,9 @@ installs new releases of the proxy itself.
 - `src/updater.js` – self-update helper for the proxy itself (not for Foundry modules): `--check` /
   `--download` the latest release of this repo (`foundry-release-proxy-<version>-linux.tar.gz` / `-windows.zip`), verify it
   against `SHA256SUMS.txt`. Exit 0 = up to date, 10 = update available/downloaded, 1 = error. No fallback to the legacy
-  names: a newer release without the new ones is an error. Installing is left to the scripts.
+  names: a newer release without the new ones is an error. Installing is left to the scripts. The repository is public:
+  the token is optional (no `Authorization` header without one; a token GitHub refuses is dropped for the run), and a
+  rate-limit answer (403/429; 60 requests an hour without a token) is a clear error.
 - `test/zippatch.test.js` (zip patching against zips built by `test/zipfixture.js`, which also reads zips back
   independently), `test/server.test.js`, `test/updater.test.js`, `test/admin.test.js` (admin API, mailer against a fake SMTP server,
   notifier), `test/adminweb.test.js` (admin port over HTTPS, certificate, reverse-proxy headers) – `node:test` suites with an injected `fetchImpl` mock
@@ -57,8 +60,9 @@ installs new releases of the proxy itself.
   `--disable-auto-update`, `--check-update` (0 / 10 / other), `--update-now`, `--uninstall [--purge]`, `--help`.
 - `scripts/install-service.sh` – systemd installer (`sudo`; the common options plus `--module ID=OWNER/REPO`, `--check`
   (alias), `--upgrade` (used by the updater)). Code in `/opt/foundry-release-proxy` (root-owned), settings in
-  `/etc/foundry-release-proxy/`. Updater token: `UPDATER_GITHUB_TOKEN`, the configured one, `INSTALL_GITHUB_TOKEN` (from
-  the one-liner; asked first when interactive), a prompt, or the proxy's `GITHUB_TOKEN`.
+  `/etc/foundry-release-proxy/`. Updater token (optional: this repository is public): `UPDATER_GITHUB_TOKEN`, the
+  configured one, `INSTALL_GITHUB_TOKEN` (from the one-liner, if it had one; asked first when interactive), an optional
+  prompt, or the proxy's `GITHUB_TOKEN`. Never a mandatory step, never a question under `--yes`.
 - `scripts/auto-update.sh` – run as root by the `foundry-release-proxy-update` timer: locks, extracts,
   backs up to `/opt/foundry-release-proxy.prev`, runs `install-service.sh --upgrade`, rolls back on failure.
 - `scripts/install-service.ps1`, `scripts/auto-update.ps1` – the same for Windows: code in
@@ -92,9 +96,8 @@ installs new releases of the proxy itself.
 - Security (`.github/workflows/security.yml`, required checks `Secrets (gitleaks)`, `Code (Semgrep)`, `Dependencies`; push to main, PRs, weekly): locally `gitleaks git --redact --log-opts="--full-history --diff-filter=tuxdb --diff-merges=first-parent HEAD" .` (only the checked-out history, like CI), `semgrep scan --metrics=off --error --severity WARNING --severity ERROR --config p/python --config p/javascript --config p/security-audit --config p/secrets --config p/github-actions --config r/bash`, and no npm dependencies, so nothing to audit (the job fails if `package.json` gains one). Semgrep false positives: `// nosemgrep: <rule-id>` (JavaScript) or `# nosemgrep: <rule-id>` (shell, YAML, PowerShell) on the matched line or the line immediately before it, with a reason; gitleaks: `.gitleaks.toml` with `[extend]` `useDefault = true`.
 
 ## Install on Linux and releasing
-- **Install on Linux**: `curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s foundry-release-proxy`
-  (private repo: it asks for a fine-grained token with read-only *Contents* access to this repository), or download
-  `foundry-release-proxy-linux.tar.gz`, `tar xzf`, `cd foundry-release-proxy-X.Y.Z`, `sudo ./install.sh`. Options: see the README.
+- **Install on Linux**: `curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s foundry-release-proxy`,
+  or download `foundry-release-proxy-linux.tar.gz`, `tar xzf`, `cd foundry-release-proxy-X.Y.Z`, `sudo ./install.sh`. Options: see the README.
 - **Releasing**: Actions → Release → Run workflow → type the version. Fallback: publish a release `vX.Y.Z` on GitHub,
   files are attached afterwards. No version bump in the code.
 
@@ -151,9 +154,9 @@ installs new releases of the proxy itself.
 - Installer: re-running it must never overwrite `/etc/foundry-release-proxy/config.json`, `admin.json` or
   `env`; `env` stays mode 600 owned by the service user; keep the systemd hardening and keep the
   script clean under shellcheck.
-- **Auto-update** stays opt-in and runs as root (Linux) / SYSTEM (Windows). Its token is the proxy's
-  `GITHUB_TOKEN` from `env` or a separate `updater-token` (root 600 / Administrators+SYSTEM only); it goes
-  only to `api.github.com` and is never on a command line or in a log. Downloads must match `SHA256SUMS.txt`;
+- **Auto-update** stays opt-in and runs as root (Linux) / SYSTEM (Windows). This repository is public, so it needs no
+  token; when there is one, it is the proxy's `GITHUB_TOKEN` from `env` or a separate `updater-token` (root 600 /
+  Administrators+SYSTEM only); it goes only to `api.github.com` and is never on a command line or in a log. Downloads must match `SHA256SUMS.txt`;
   only strictly newer, non-draft, non-prerelease versions install. Root/SYSTEM must never run code a
   non-admin account can change: the Linux code folder stays `root:root` with explicit
   modes (`chmod -R u=rwX,go=rX`, never left to root's umask, which can make it unreadable for the service), the Windows one stays under

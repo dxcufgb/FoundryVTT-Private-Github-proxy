@@ -32,9 +32,10 @@
 #   /etc/foundry-release-proxy/auto-update.conf   auto-update on/off and which token it uses (root, 600)
 #   /etc/foundry-release-proxy/updater-token      only if the updater has its own token (root, 600)
 #
-# Automatic updates are off unless asked for. The tokens are taken from a prompt or from the environment
-# (FOUNDRY_PROXY_GITHUB_TOKEN for the proxy, UPDATER_GITHUB_TOKEN for the updater, INSTALL_GITHUB_TOKEN from the
-# one-line installer as a candidate updater token), never from the command line. The same goes for the admin page
+# Automatic updates are off unless asked for. This repository is public, so the updater needs no token; it uses one
+# when there is one (more API requests per hour than without). The tokens are taken from a prompt or from the
+# environment (FOUNDRY_PROXY_GITHUB_TOKEN for the proxy, UPDATER_GITHUB_TOKEN for the updater, INSTALL_GITHUB_TOKEN
+# from the one-line installer as a candidate updater token), never from the command line. The same goes for the admin page
 # password (FOUNDRY_PROXY_ADMIN_PASSWORD) and the SMTP password (FOUNDRY_PROXY_SMTP_PASSWORD).
 #
 # Logs:    journalctl -u foundry-release-proxy -f      (updates: journalctl -u foundry-release-proxy-update)
@@ -89,9 +90,10 @@ Options of this installer:
 Environment (tokens are never taken as arguments and never logged):
   FOUNDRY_PROXY_GITHUB_TOKEN  the proxy's token (Contents: read-only on the module repositories);
                               needed with --yes on a first install
-  UPDATER_GITHUB_TOKEN        a separate token for the updater (Contents: read-only on this repository)
-  INSTALL_GITHUB_TOKEN        set by the one-line installer; stored as the updater token when automatic updates
-                              are turned on (asked first when interactive)
+  UPDATER_GITHUB_TOKEN        optional token for the updater alone (this repository is public, so the updater needs
+                              none; without one it uses the proxy's token if GitHub accepts it, else no token)
+  INSTALL_GITHUB_TOKEN        set by the one-line installer if it was given a token; stored as the updater token
+                              when automatic updates are turned on (asked first when interactive)
   FOUNDRY_PROXY_ADMIN_PASSWORD  password of the administration page (at least 8 characters; first install or
                               --set-admin-password; without one the page stays off)
   FOUNDRY_PROXY_NOTIFY_EMAILS   update-notification recipients, comma separated (first install or --set-notify)
@@ -231,24 +233,25 @@ if [[ "$action" == update ]]; then
     exit 0
 fi
 
-# Asks for the updater's token on the terminal and prints it, or prints nothing for "use the proxy's GITHUB_TOKEN".
-# An EOF or read error never yields a token: it means "use the proxy's GITHUB_TOKEN".
+# Optionally asks for a token of the updater's own on the terminal and prints it, or prints nothing for "use the
+# proxy's GITHUB_TOKEN if GitHub accepts it, else no token". The default, an EOF or a read error yield no token.
 ask_updater_token() {
     local answer="" token=""
-    echo "The updater needs a GitHub token that can read releases of $UPDATE_REPO." >&2
-    echo "The proxy's own GITHUB_TOKEN works if you also give it Contents: read-only on that repository." >&2
-    read -rp "Use the proxy's GITHUB_TOKEN from $CONF_DIR/env? [Y/n] " answer || return 0
-    if [[ "$answer" =~ ^[Nn] ]]; then
-        if read -rsp "Updater token (fine-grained, Contents: read-only on $UPDATE_REPO): " token; then
+    echo "$UPDATE_REPO is public, so the updater needs no token of its own: it uses the proxy's" >&2
+    echo "GITHUB_TOKEN when GitHub accepts it, else none (GitHub then allows 60 API requests an hour)." >&2
+    read -rp "Give the updater a GitHub token of its own anyway? [y/N] " answer || return 0
+    if [[ "$answer" =~ ^[Yy] ]]; then
+        if read -rsp "Updater token (fine-grained, public repositories read-only; Enter for none): " token; then
             printf '%s' "$token"
         fi
         echo >&2
     fi
 }
 
-# Chooses the updater's token: UPDATER_GITHUB_TOKEN, the token already configured, INSTALL_GITHUB_TOKEN (the one the
-# one-line installer downloaded this release with; asked first when interactive, and only an explicit answer other
-# than "n" stores it: an EOF stores nothing and asks nothing more), a prompt, or the proxy's own GITHUB_TOKEN from env.
+# Chooses the updater's (optional) token: UPDATER_GITHUB_TOKEN, the token already configured, INSTALL_GITHUB_TOKEN (the
+# one the one-line installer downloaded this release with, if any; asked first when interactive, and only an explicit
+# answer other than "n" stores it: an EOF stores nothing and asks nothing more), an optional prompt, or the proxy's own
+# GITHUB_TOKEN from env (the updater falls back to no token when GitHub refuses it). Never stops --yes to ask.
 choose_updater_token() {
     local current token="" answer=""
     current="$(setting TOKEN_FILE)"
@@ -377,14 +380,14 @@ enable_auto_update() {
     token_file="$(choose_updater_token)"
     write_auto_conf yes "$token_file"
     install_updater_units
-    echo "Automatic updates on: daily check (randomized time) of $UPDATE_REPO, token from $token_file."
+    echo "Automatic updates on: daily check (randomized time) of $UPDATE_REPO (public; token, if any, from $token_file)."
     if [[ "$upgrade" == no ]]; then
         local rc=0
         run_updater --check >/dev/null 2>&1 || rc=$?
         if [[ $rc -eq 75 ]]; then
             echo "Another update run is in progress; check later with: sudo $APP_DIR/scripts/install-service.sh --check-update" >&2
         elif [[ $rc -ne 0 && $rc -ne 10 ]]; then
-            echo "Warning: the update check failed; make sure the token in $token_file can read $UPDATE_REPO." >&2
+            echo "Warning: the update check failed (GitHub unreachable, or its API rate limit reached?)." >&2
             echo "Try it with: sudo $APP_DIR/scripts/install-service.sh --check-update" >&2
         fi
     fi
@@ -684,7 +687,7 @@ if [[ "$SRC_DIR" != "$(readlink -f "$APP_DIR" 2>/dev/null || echo "$APP_DIR")" ]
     rm -rf "$APP_DIR"
     mkdir -p "$APP_DIR"
     cp -r "$SRC_DIR/src" "$SRC_DIR/scripts" "$SRC_DIR/package.json" "$APP_DIR/"
-    for f in README.md config.example.json .env.example; do
+    for f in README.md LICENSE config.example.json .env.example; do
         if [[ -f "$SRC_DIR/$f" ]]; then cp "$SRC_DIR/$f" "$APP_DIR/"; fi
     done
     chown -R root:root "$APP_DIR"

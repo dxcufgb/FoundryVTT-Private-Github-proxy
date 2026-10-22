@@ -33,8 +33,9 @@ Layout (config.json and env are created once and never overwritten):
 The proxy runs as the scheduled task "FoundryReleaseProxy" under LOCAL SERVICE (node --env-file, Node.js >= 20.6).
 The updater runs daily (random delay) as the task "FoundryReleaseProxy-Update" under SYSTEM. "Update proxy now" on the
 admin page starts the task "FoundryReleaseProxy-UpdateNow" (SYSTEM, no schedule; LOCAL SERVICE may only run it).
-Tokens come from a hidden prompt or the FOUNDRY_PROXY_GITHUB_TOKEN / UPDATER_GITHUB_TOKEN environment variables,
-never from the command line. The same goes for the admin page password (FOUNDRY_PROXY_ADMIN_PASSWORD) and the
+This repository is public, so the updater needs no token; it uses one when there is one (UPDATER_GITHUB_TOKEN, else
+the proxy's GITHUB_TOKEN if GitHub accepts it). Tokens come from a hidden prompt or the FOUNDRY_PROXY_GITHUB_TOKEN /
+UPDATER_GITHUB_TOKEN environment variables, never from the command line. The same goes for the admin page password (FOUNDRY_PROXY_ADMIN_PASSWORD) and the
 notification settings (FOUNDRY_PROXY_NOTIFY_EMAILS, FOUNDRY_PROXY_SMTP_HOST, _PORT, _SECURITY, _USER, _PASSWORD, _FROM).
 The browser admin port: FOUNDRY_PROXY_ADMIN_WEB=1 (first install), FOUNDRY_PROXY_ADMIN_PORT (default 8788) and
 FOUNDRY_PROXY_ADMIN_PUBLIC_URL; -AdminWeb also opens the port in Windows Firewall (Domain and Private networks).
@@ -409,7 +410,8 @@ function Write-AutoUpdateConf([string]$Enabled, [string]$TokenFile, [string]$Nod
     Protect-AdminFile $AutoConf
 }
 
-# The updater's token: UPDATER_GITHUB_TOKEN, a prompt, or the proxy's own GITHUB_TOKEN from env.
+# The updater's optional token: UPDATER_GITHUB_TOKEN, the configured one, an optional prompt, or the proxy's own
+# GITHUB_TOKEN from env (the updater falls back to no token when GitHub refuses it). Never asks when non-interactive.
 function Get-UpdaterTokenFile {
     $current = Get-Setting 'TOKEN_FILE'
     $token = ''
@@ -420,11 +422,11 @@ function Get-UpdaterTokenFile {
         return $current
     }
     elseif (Test-Interactive) {
-        Write-ProxyLog "The updater needs a GitHub token that can read releases of $UpdateRepo."
-        Write-ProxyLog "The proxy's own GITHUB_TOKEN works if you also give it Contents: read-only on that repository."
-        $answer = Read-Host -Prompt "Use the proxy's GITHUB_TOKEN from $EnvFile? [Y/n]"
-        if ($answer -match '^[Nn]') {
-            $token = Read-Secret "Updater token (fine-grained, Contents: read-only on $UpdateRepo)"
+        Write-ProxyLog "$UpdateRepo is public, so the updater needs no token of its own: it uses the proxy's"
+        Write-ProxyLog 'GITHUB_TOKEN when GitHub accepts it, else none (GitHub then allows 60 API requests an hour).'
+        $answer = Read-Host -Prompt 'Give the updater a GitHub token of its own anyway? [y/N]'
+        if ($answer -match '^[Yy]') {
+            $token = Read-Secret 'Updater token (fine-grained, public repositories read-only; Enter for none)'
         }
     }
     if ($token) {
@@ -452,14 +454,14 @@ function Enable-AutoUpdate([string]$Node) {
     $tokenFile = Get-UpdaterTokenFile
     Write-AutoUpdateConf -Enabled 'yes' -TokenFile $tokenFile -Node $Node
     Register-UpdaterTask
-    Write-ProxyLog "Automatic updates on: daily check (random time) of $UpdateRepo, token from $tokenFile."
+    Write-ProxyLog "Automatic updates on: daily check (random time) of $UpdateRepo (public; token, if any, from $tokenFile)."
     if (-not $IsUpgrade) {
         $rc = Invoke-Updater '-Check'
         if ($rc -eq 75) {
             Write-ProxyLog 'Another update run is in progress; check later with: .\scripts\install-service.ps1 -Check'
         }
         elseif ($rc -ne 0 -and $rc -ne 10) {
-            Write-Warning "The update check failed; make sure the token in $tokenFile can read $UpdateRepo. Try: .\scripts\install-service.ps1 -Check"
+            Write-Warning 'The update check failed (GitHub unreachable, or its API rate limit reached?). Try: .\scripts\install-service.ps1 -Check'
         }
     }
 }
@@ -545,7 +547,7 @@ $appFull = [IO.Path]::GetFullPath($AppDir).TrimEnd('\')
 if ([IO.Path]::GetFullPath($SrcDir).TrimEnd('\') -ne $appFull) {
     if (Test-Path -LiteralPath $AppDir) { Remove-Item -LiteralPath $AppDir -Recurse -Force }
     New-Item -ItemType Directory -Path $AppDir | Out-Null
-    foreach ($item in @('src', 'scripts', 'package.json', 'README.md', 'config.example.json', '.env.example')) {
+    foreach ($item in @('src', 'scripts', 'package.json', 'README.md', 'LICENSE', 'config.example.json', '.env.example')) {
         $path = Join-Path $SrcDir $item
         if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $AppDir -Recurse -Force }
     }

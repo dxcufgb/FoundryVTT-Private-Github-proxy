@@ -41,7 +41,7 @@ try {
     if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
     Remove-Item Env:FOUNDRY_PROXY_GITHUB_TOKEN, Env:FOUNDRY_PROXY_ADMIN_PASSWORD
 
-    foreach ($path in @("$app\src\server.js", "$app\scripts\install-service.ps1", "$env:ProgramFiles\FoundryReleaseProxy-Node\node.exe",
+    foreach ($path in @("$app\src\server.js", "$app\scripts\install-service.ps1", "$app\LICENSE", "$env:ProgramFiles\FoundryReleaseProxy-Node\node.exe",
             "$data\env", "$data\config.json", "$data\admin.json")) {
         if (-not (Test-Path -LiteralPath $path)) { throw "missing $path" }
     }
@@ -70,7 +70,8 @@ try {
     if (-not $state.token.canChange) { throw "the admin page cannot change the token: $($state.token.problem)" }
     Write-Output 'admin page logs in, saves modules and may change the token'
 
-    # "Update proxy now": the proxy (LOCAL SERVICE) may start the SYSTEM task (the update fails: the token is fake).
+    # "Update proxy now": the proxy (LOCAL SERVICE) may start the SYSTEM task (it installs nothing: CI builds the
+    # installer with a version newer than any release).
     $before = (Get-ScheduledTaskInfo -TaskName 'FoundryReleaseProxy-UpdateNow').LastRunTime
     Invoke-WebRequest -UseBasicParsing -Uri "$base/update" -Method Post -ContentType 'application/json' -WebSession $admin `
         -Headers @{ 'X-CSRF-Token' = $csrf } -Body '{}' | Out-Null

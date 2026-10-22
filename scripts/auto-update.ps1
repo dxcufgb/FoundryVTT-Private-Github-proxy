@@ -12,8 +12,9 @@ Normally run as SYSTEM by the scheduled task "FoundryReleaseProxy-Update" that
                            restart the proxy; on any failure the previous install is put back
 
 The release lookup, version comparison, download and checksum check are in src\updater.js; this script only locks,
-extracts, backs up, installs and rolls back. config.json and env are never touched. The GitHub token is read from
-the file named in auto-update.conf and never logged. Log: C:\ProgramData\FoundryReleaseProxy\auto-update.log
+extracts, backs up, installs and rolls back. config.json and env are never touched. The repository is public, so no
+GitHub token is needed; one is used if the file named in auto-update.conf (default: the proxy's env) holds one, and it
+is never logged. Log: C:\ProgramData\FoundryReleaseProxy\auto-update.log
 
 -Apply e-mails the recipients in admin.json (installer or admin page) when it installed a new version or failed
 (src\notify.js; a failed e-mail is only logged).
@@ -125,10 +126,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $AppDir 'src\updater.js'))) {
 }
 $tokenFile = Get-Setting 'TOKEN_FILE'
 if (-not $tokenFile) { $tokenFile = Join-Path $DataDir 'env' }
-if (-not (Test-Path -LiteralPath $tokenFile)) {
-    Write-ProxyLog "ERROR: token file $tokenFile is missing"
-    exit 1
-}
+# Optional: without a token file the updater asks GitHub without a token.
+$tokenArg = ''
+if (Test-Path -LiteralPath $tokenFile) { $tokenArg = " --token-file `"$tokenFile`"" }
+else { Write-ProxyLog "token file $tokenFile is missing; checking without a token" }
 
 $mutex = New-Object System.Threading.Mutex($false, "Global\$AppName-Update")
 $locked = $false
@@ -151,7 +152,7 @@ function Invoke-Update {
     New-Item -ItemType Directory -Path (Join-Path $work 'extract') -Force | Out-Null
 
     $mode = if ($Check) { '--check' } else { "--download `"$(Join-Path $work 'download')`"" }
-    $argLine = "`"$(Join-Path $AppDir 'src\updater.js')`" $mode --format zip --app-dir `"$AppDir`" --token-file `"$tokenFile`""
+    $argLine = "`"$(Join-Path $AppDir 'src\updater.js')`" $mode --format zip --app-dir `"$AppDir`"$tokenArg"
     $outFile = Join-Path $work 'updater.out'
     $errFile = Join-Path $work 'updater.err'
     $proc = Start-Process -FilePath $node -ArgumentList $argLine -NoNewWindow -Wait -PassThru `

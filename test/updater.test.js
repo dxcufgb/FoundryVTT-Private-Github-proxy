@@ -168,13 +168,75 @@ test('check: the release lookup carries the token, and errors are reported witho
   for (const [status, re] of [
     [404, /HTTP 404/],
     [401, /HTTP 401/],
+    [500, /HTTP 500/],
   ]) {
-    const u = createUpdater({ token: TOKEN, fetchImpl: mockFetch({ [LATEST]: () => json({}, status) }) });
+    const u = createUpdater({ token: TOKEN, fetchImpl: mockFetch({ [LATEST]: () => json({}, status) }), log: () => {} });
     await assert.rejects(u.check('1.0.0'), (err) => re.test(err.message) && !err.message.includes(TOKEN));
   }
   const bad = createUpdater({ token: TOKEN, fetchImpl: mockFetch({ [LATEST]: () => new Response('not json') }) });
   await assert.rejects(bad.check('1.0.0'), /invalid JSON/);
-  assert.throws(() => createUpdater({ token: '' }), /no GitHub token/);
+});
+
+test('check: without a token the release lookup has no Authorization header', async () => {
+  for (const token of [undefined, '']) {
+    const f = mockFetch({ [LATEST]: () => json(release('v1.1.0')) });
+    const r = await createUpdater({ token, fetchImpl: f, log: () => {} }).check('1.0.0');
+    assert.equal(r.newer, true);
+    assert.equal(f.calls.length, 1);
+    assert.ok(!('Authorization' in f.calls[0].init.headers), 'no Authorization header');
+    assert.equal(f.calls[0].init.headers['User-Agent'], 'foundry-release-proxy-updater');
+    assert.ok(f.calls[0].init.signal, 'request has a timeout signal');
+  }
+  const u = createUpdater({ fetchImpl: mockFetch({ [LATEST]: () => json({}, 404) }), log: () => {} });
+  await assert.rejects(u.check('1.0.0'), /no published release found.*HTTP 404/);
+});
+
+test('check: a token GitHub refuses is dropped and the lookup repeated without it', async () => {
+  for (const status of [401, 403, 404]) {
+    const logs = [];
+    const f = mockFetch({
+      [LATEST]: (init) => (init.headers.Authorization ? json({ message: 'Bad credentials' }, status) : json(release('v1.0.0'))),
+    });
+    const r = await createUpdater({ token: TOKEN, fetchImpl: f, log: (l) => logs.push(l) }).check('1.0.0');
+    assert.equal(r.newer, false);
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.calls[0].init.headers.Authorization, `Bearer ${TOKEN}`);
+    assert.ok(!('Authorization' in f.calls[1].init.headers), `retried without the token after HTTP ${status}`);
+    assert.match(logs.join('\n'), new RegExp(`refused the updater's token \\(HTTP ${status}\\); continuing without it`));
+    assert.ok(logs.every((l) => !l.includes(TOKEN)));
+  }
+});
+
+test('check: the API rate limit (403 or 429) gives a clear error', async () => {
+  const reset = String(Math.floor(Date.UTC(2030, 0, 1) / 1000));
+  const limited = (status, headers) => () =>
+    new Response('{"message":"API rate limit exceeded"}', { status, headers: { 'x-ratelimit-reset': reset, ...headers } });
+  for (const [status, headers] of [
+    [403, { 'x-ratelimit-remaining': '0' }],
+    [403, { 'retry-after': '60' }],
+    [429, {}],
+  ]) {
+    // without a token: says how to get more requests
+    let f = mockFetch({ [LATEST]: limited(status, headers) });
+    await assert.rejects(
+      createUpdater({ fetchImpl: f, log: () => {} }).check('1.0.0'),
+      (err) =>
+        err instanceof UpdateError &&
+        new RegExp(`rate limit is reached \\(HTTP ${status}\\)`).test(err.message) &&
+        /60 API requests an hour/.test(err.message) &&
+        /resets at 2030-01-01T00:00:00\.000Z; try again later/.test(err.message),
+    );
+    // with a token: the token is kept (it is not refused, GitHub only asks to wait) and never in the message
+    f = mockFetch({ [LATEST]: limited(status, headers) });
+    await assert.rejects(
+      createUpdater({ token: TOKEN, fetchImpl: f, log: () => {} }).check('1.0.0'),
+      (err) => /rate limit is reached/.test(err.message) && !/60 API requests/.test(err.message) && !err.message.includes(TOKEN),
+    );
+    assert.equal(f.calls.length, 1);
+  }
+  // a plain 403 without rate-limit headers is not reported as a rate limit
+  const f = mockFetch({ [LATEST]: () => json({ message: 'Forbidden' }, 403) });
+  await assert.rejects(createUpdater({ fetchImpl: f, log: () => {} }).check('1.0.0'), /release lookup failed \(HTTP 403\)/);
 });
 
 test('download: redirect is followed without the token and the checksum is verified', async () => {
@@ -196,6 +258,29 @@ test('download: redirect is followed without the token and the checksum is verif
   assert.equal(assetCall.init.headers.Accept, 'application/octet-stream');
   assert.equal(assetCall.init.redirect, 'manual');
   fs.rmSync(dir, { recursive: true });
+});
+
+test('download: without a token no request carries an Authorization header, and the checksum is verified', async () => {
+  const archive = Buffer.from('fake archive contents');
+  const { rel, routes } = releaseRoutes('v1.1.0', archive);
+  const f = mockFetch(routes);
+  const dir = tmpdir();
+  const file = await createUpdater({ fetchImpl: f, log: () => {} }).download(rel, 'tar.gz', dir);
+  assert.deepEqual(fs.readFileSync(file), archive);
+  assert.equal(f.calls.length, 4);
+  for (const call of f.calls) assert.ok(!('Authorization' in (call.init.headers || {})), `no token sent to ${call.url}`);
+  fs.rmSync(dir, { recursive: true });
+
+  // a rate-limited asset request is reported as such
+  const { rel: rel2, routes: routes2 } = releaseRoutes('v1.1.0', archive);
+  routes2[rel2.assets[2].url] = () => new Response('', { status: 429 });
+  const dir2 = tmpdir();
+  await assert.rejects(
+    createUpdater({ fetchImpl: mockFetch(routes2), log: () => {} }).download(rel2, 'tar.gz', dir2),
+    /download of SHA256SUMS\.txt: GitHub's API rate limit is reached \(HTTP 429\)/,
+  );
+  assert.deepEqual(fs.readdirSync(dir2), []);
+  fs.rmSync(dir2, { recursive: true });
 });
 
 test('download: a checksum mismatch is refused and nothing is written', async () => {
@@ -291,6 +376,33 @@ test('cli: --check reports and exits 0 when current, 10 when newer; never prints
   fs.rmSync(dir, { recursive: true });
 });
 
+test('cli: works without any token (public repository): no Authorization header', async () => {
+  const dir = fakeInstall('1.0.0');
+  const outDir = tmpdir();
+  const archive = Buffer.from('release archive');
+  const { routes } = releaseRoutes('v1.1.0', archive);
+  const out = [];
+  let f = mockFetch({ [LATEST]: () => json(release('v1.0.0')) });
+  assert.equal(await main(['--check', '--app-dir', dir], { env: {}, fetchImpl: f, log: (l) => out.push(l) }), EXIT_CURRENT);
+  f = mockFetch(routes);
+  const code = await main(['--download', outDir, '--app-dir', dir, '--format', 'tar.gz'], {
+    env: {},
+    fetchImpl: f,
+    log: (l) => out.push(l),
+  });
+  assert.equal(code, EXIT_UPDATE);
+  assert.ok(f.calls.every((c) => !('Authorization' in (c.init.headers || {}))));
+  assert.deepEqual(fs.readFileSync(path.join(outDir, 'foundry-release-proxy-1.1.0-linux.tar.gz')), archive);
+  // a token file without a token (the proxy's env before a token was filled in) means: no token
+  fs.writeFileSync(path.join(dir, 'token'), 'GITHUB_TOKEN=REPLACE_ME\n');
+  f = mockFetch({ [LATEST]: () => json(release('v1.0.0')) });
+  const args = ['--check', '--app-dir', dir, '--token-file', path.join(dir, 'token')];
+  assert.equal(await main(args, { env: {}, fetchImpl: f, log: () => {} }), EXIT_CURRENT);
+  assert.ok(!('Authorization' in f.calls[0].init.headers));
+  fs.rmSync(dir, { recursive: true });
+  fs.rmSync(outDir, { recursive: true });
+});
+
 test('cli: --download writes the verified archive and prints its path', async () => {
   const dir = fakeInstall('1.0.0');
   const outDir = tmpdir();
@@ -323,14 +435,12 @@ test('cli: errors exit 1 with a message that never contains the token', async ()
     assert.equal(await main(['--bogus'], { env: {}, fetchImpl: f, log: () => {} }), EXIT_ERROR);
     const missing = ['--check', '--app-dir', dir, '--token-file', path.join(dir, 'nope')];
     assert.equal(await main(missing, { env: {}, fetchImpl: f, log: () => {} }), EXIT_ERROR);
-    const noToken = ['--check', '--app-dir', dir];
-    assert.equal(await main(noToken, { env: {}, fetchImpl: f, log: () => {} }), EXIT_ERROR);
   } finally {
     console.error = orig;
   }
-  assert.equal(errors.length, 4);
+  assert.equal(errors.length, 3);
   assert.match(errors[0], /HTTP 401/);
-  assert.match(errors[3], /no GitHub token/);
+  assert.match(errors[2], /cannot read token file/);
   assert.ok(errors.every((e) => !e.includes(TOKEN)));
   fs.rmSync(dir, { recursive: true });
 });

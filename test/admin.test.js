@@ -538,7 +538,11 @@ test('env files are parsed without shell expansion', () => {
 
 // A fake GitHub for the token and setup tests. Every Authorization header it sees is recorded in `seen`; `tokens` maps
 // a token to its owner's login (unknown tokens get 401); `expires` is the expiry header GitHub would send.
-function fakeGithub({ tokens = { [TOKEN]: 'octo' }, expires = '2099-01-01 00:00:00 UTC', repos = {}, down = false, userStatus } = {}) {
+// anonymous: repositories (names in `repos`) that requests without a token can read, like GitHub's public ones.
+// A repository with `tokenless: true` is readable only without a token (one the token was not given).
+function fakeGithub({
+  tokens = { [TOKEN]: 'octo' }, expires = '2099-01-01 00:00:00 UTC', repos = {}, anonymous = [], down = false, userStatus,
+} = {}) {
   const seen = [];
   const fetchImpl = async (url, init = {}) => {
     const auth = (init.headers && init.headers.Authorization) || '';
@@ -546,7 +550,14 @@ function fakeGithub({ tokens = { [TOKEN]: 'octo' }, expires = '2099-01-01 00:00:
     if (down) throw new TypeError('fetch failed');
     if (url === `${API}/user` && userStatus) return new Response('{"message":"API rate limit exceeded"}', { status: userStatus });
     const tok = auth.replace(/^Bearer /, '');
-    if (!Object.hasOwn(tokens, tok)) return new Response('{"message":"Bad credentials"}', { status: 401 });
+    if (!auth) {
+      const m = /^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/]+)/.exec(url);
+      if (!m || !anonymous.includes(m[1])) {
+        return new Response('{"message":"Not Found"}', { status: url === `${API}/user` ? 401 : 404 });
+      }
+    } else if (!Object.hasOwn(tokens, tok)) {
+      return new Response('{"message":"Bad credentials"}', { status: 401 });
+    }
     if (url === `${API}/user`) {
       return new Response(JSON.stringify({ login: tokens[tok] }), {
         headers: expires ? { 'github-authentication-token-expiration': expires } : {},
@@ -554,7 +565,7 @@ function fakeGithub({ tokens = { [TOKEN]: 'octo' }, expires = '2099-01-01 00:00:
     }
     const m = /^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/]+)(\/releases\/latest)?$/.exec(url);
     const repo = m && repos[m[1]];
-    if (!repo) return new Response('{"message":"Not Found"}', { status: 404 });
+    if (!repo || (repo.tokenless && auth)) return new Response('{"message":"Not Found"}', { status: 404 });
     if (!m[2]) return new Response('{}');
     if (!repo.assets) return new Response('{"message":"Not Found"}', { status: 404 });
     return new Response(JSON.stringify({ tag_name: repo.tag || 'v1.0.0', assets: repo.assets.map((name) => ({ name })) }));
@@ -653,19 +664,21 @@ test('Test setup checks the token, the proxy repository and every module reposit
     assert.deepEqual(Object.keys(by), ['Automatic updates', 'alpha', 'beta', 'delta', 'gamma']);
     assert.equal(by['Automatic updates'].repo, PROXY_REPO);
     assert.equal(by['Automatic updates'].status, 'warn');
-    assert.match(by['Automatic updates'].message, /cannot see this repository.*own updater token/);
+    assert.match(by['Automatic updates'].message,
+      /^with the token: the token cannot see this repository.*; without a token: not found without a token either.*; automatic updates and "Check for update" read the releases there$/);
     assert.deepEqual([by.alpha.status, by.alpha.message], ['ok', 'latest release v2.0.0']);
     assert.match(by.beta.message, /cannot see this repository/);
     assert.match(by.gamma.message, /no published release/);
     assert.match(by.delta.message, /lacks module\.zip/);
-    assert.ok(gh.seen.every((x) => x.auth === `Bearer ${TOKEN}`));
+    // the token goes everywhere; only the proxy's own (public) repository is also tried without it
+    assert.ok(gh.seen.every((x) => x.auth === `Bearer ${TOKEN}` || (x.auth === '' && x.url.startsWith(`${API}/repos/${PROXY_REPO}`))));
 
     // a typed token is tested (and only tested): the saved one stays
     gh.seen.length = 0;
     res = await s.call('POST', 'setup-test', { token: NEW_TOKEN });
     assert.equal(res.data.tested, 'typed');
     assert.match(res.data.token.message, /\(neo\)/);
-    assert.ok(gh.seen.every((x) => x.auth === `Bearer ${NEW_TOKEN}`));
+    assert.ok(gh.seen.every((x) => x.auth === `Bearer ${NEW_TOKEN}` || (x.auth === '' && x.url.startsWith(`${API}/repos/${PROXY_REPO}`))));
     assert.ok(fs.readFileSync(s.envFile, 'utf8').includes(`GITHUB_TOKEN=${TOKEN}`));
     assert.ok(!res.text.includes(NEW_TOKEN));
     // a token GitHub rejects: nothing else is checked
@@ -674,6 +687,37 @@ test('Test setup checks the token, the proxy repository and every module reposit
     assert.deepEqual(res.data.checks, []);
     assert.equal((await s.call('POST', 'setup-test', { token: 'not a token' })).status, 400);
     assert.ok(s.logs.every((l) => !l.includes(TOKEN) && !l.includes(NEW_TOKEN) && !l.includes(BAD_TOKEN)));
+  } finally {
+    await s.close();
+  }
+});
+
+test('Test setup: the public proxy repository is fine when it is readable without the token', async () => {
+  const sent = [];
+  const notifySettings = {
+    recipients: ['gm@example.com'],
+    smtp: { host: 'smtp.example.com', port: 587, security: 'starttls', user: '', password: '', from: 'proxy@example.com' },
+  };
+  // the token was only given the module repositories; the proxy's own repository is public
+  const gh = fakeGithub({
+    repos: { 'o/alpha': { assets: BOTH }, [PROXY_REPO]: { assets: [], tag: 'v1.9.0', tokenless: true } },
+    anonymous: [PROXY_REPO],
+  });
+  const modules = { alpha: { repo: 'o/alpha' } };
+  const s = await start({ modules, fetchImpl: gh.fetchImpl, mailer: async (smtp, msg) => sent.push(msg), notifySettings });
+  try {
+    await s.login();
+    const res = await s.call('POST', 'setup-test', {});
+    const proxy = res.data.checks.find((c) => c.kind === 'proxy');
+    assert.equal(proxy.status, 'ok');
+    assert.equal(proxy.message, 'latest release v1.9.0 (public repository, read without the token)');
+    // the anonymous requests carry no token at all, and only go to the proxy's own repository
+    const anon = gh.seen.filter((x) => x.auth === '');
+    assert.ok(anon.length > 0 && anon.every((x) => x.url.startsWith(`${API}/repos/${PROXY_REPO}`)));
+    // the daily check counts it as seen, so losing it later would be mailed; for now: no problem, no mail
+    const r = await s.server.runSetupCheck();
+    assert.deepEqual(r.problems, []);
+    assert.equal(sent.length, 0);
   } finally {
     await s.close();
   }
@@ -749,11 +793,12 @@ test('the daily check e-mails problems every day they last and once more when th
     assert.match(sent[3].subject, /setup OK again/);
     await s.server.runSetupCheck();
     assert.equal(sent.length, 4);
-    // the token loses access to the proxy's own repository (automatic updates): that is mailed too
+    // the proxy's own repository (automatic updates) can no longer be read, with the token or without: mailed too
     delete repos[PROXY_REPO];
     await s.server.runSetupCheck();
     assert.equal(sent.length, 5);
-    assert.match(sent[4].text, /Automatic updates \(dxcufgb\/FoundryVTT-Private-Github-proxy\): the token cannot see/);
+    assert.match(sent[4].text,
+      /Automatic updates \(dxcufgb\/FoundryVTT-Private-Github-proxy\): with the token: the token cannot see.*without a token: not found/);
     for (const m of sent) assert.ok(!m.text.includes(TOKEN));
     assert.ok(s.logs.every((l) => !l.includes(TOKEN)));
   } finally {
@@ -863,7 +908,19 @@ test('"Update proxy now" shows the versions and asks the updater to run, at most
   } finally {
     await s.close();
   }
-  // not set up (old install) or the token cannot see the proxy repository
+  // the token cannot see the proxy repository, which is public: the latest release is read without the token
+  const gh3 = fakeGithub({ repos: { [PROXY_REPO]: { assets: [], tag: 'v1.6.0', tokenless: true } }, anonymous: [PROXY_REPO] });
+  const s3 = await start({ fetchImpl: gh3.fetchImpl, updateTrigger, version: '1.4.2' });
+  try {
+    await s3.login();
+    const res = await s3.call('GET', 'update');
+    assert.deepEqual([res.data.latest, res.data.newer, res.data.latestProblem], ['1.6.0', true, '']);
+    const release = gh3.seen.filter((x) => x.url === `${API}/repos/${PROXY_REPO}/releases/latest`);
+    assert.deepEqual(release.map((x) => x.auth), [`Bearer ${TOKEN}`, '']);
+  } finally {
+    await s3.close();
+  }
+  // not set up (old install) or no release can be read
   problem = 'the scheduled task is missing';
   const gh2 = fakeGithub({});
   const s2 = await start({ fetchImpl: gh2.fetchImpl, updateTrigger, version: '1.4.2' });
@@ -871,7 +928,7 @@ test('"Update proxy now" shows the versions and asks the updater to run, at most
     await s2.login();
     const res = await s2.call('GET', 'update');
     assert.equal(res.data.latest, null);
-    assert.match(res.data.latestProblem, /cannot see dxcufgb\/FoundryVTT-Private-Github-proxy/);
+    assert.match(res.data.latestProblem, /no published release of dxcufgb\/FoundryVTT-Private-Github-proxy found/);
     assert.equal(res.data.canUpdate, false);
     const post = await s2.call('POST', 'update', {});
     assert.equal(post.status, 409);

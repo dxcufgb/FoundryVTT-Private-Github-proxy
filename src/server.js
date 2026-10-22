@@ -163,8 +163,9 @@ function createApp({
   // The admin page can replace it (githubToken.save below).
   let currentToken = token;
 
+  // tok === null: no Authorization header (this proxy's own repository is public).
   const apiHeaders = (accept, tok = currentToken) => ({
-    Authorization: `Bearer ${tok}`,
+    ...(tok === null ? {} : { Authorization: `Bearer ${tok}` }),
     Accept: accept,
     'X-GitHub-Api-Version': '2022-11-28',
     'User-Agent': 'foundry-release-proxy',
@@ -440,6 +441,7 @@ function createApp({
     await res.body?.cancel?.();
     if (res.ok) return null;
     if (res.status === 404) {
+      if (tok === null) return { status: 'bad', message: 'not found without a token either (renamed, deleted or not public?)' };
       return { status: 'bad', message: "the token cannot see this repository (add it to the token's Repository access)" };
     }
     if (res.status === 401) return { status: 'bad', message: 'GitHub rejects the token' };
@@ -474,9 +476,16 @@ function createApp({
   async function testSetup(tok = currentToken) {
     const token = await checkToken(tok);
     if (token.status === 'bad') return { token, checks: [] };
-    const proxy = checkRepo(PROXY_REPO, [], tok).then((r) => {
-      // Only needed when automatic updates use the proxy's token rather than an updater token of their own.
-      const why = 'automatic updates need it unless they have their own updater token';
+    const proxy = checkRepo(PROXY_REPO, [], tok).then(async (r) => {
+      // The repository is public and the updater needs no token: what counts is that its releases can be read,
+      // with the token or without one.
+      if (r.status !== 'ok' && !r.unreachable) {
+        const anon = await checkRepo(PROXY_REPO, [], null);
+        r = anon.status === 'ok'
+          ? { ...anon, message: `${anon.message} (public repository, read without the token)` }
+          : { ...anon, message: `with the token: ${r.message}; without a token: ${anon.message}` };
+      }
+      const why = 'automatic updates and "Check for update" read the releases there';
       return { kind: 'proxy', name: 'Automatic updates', repo: PROXY_REPO,
         ...(r.status === 'ok' ? r : { status: 'warn', message: `${r.message}; ${why}` }) };
     });
@@ -491,8 +500,8 @@ function createApp({
   // they last, and one more mail says when they are gone. lastCheck is shown on the admin page.
   let lastCheck = null; // { at, problems }
   let failing = false;
-  // The proxy's own repository counts only once the token has been seen to read it: many installs never give it
-  // access (no automatic updates, or an updater token of their own), and they must not get a mail every day.
+  // The proxy's own repository counts only once its releases have been seen: an install that cannot read them from
+  // the start (e.g. no access to GitHub's public API) must not get a mail every day.
   let proxyRepoSeen = false;
   const adminLink = adminUrl || `${base}/_admin/`;
 
@@ -556,18 +565,27 @@ function createApp({
     };
   }
 
-  // "Update proxy now": the installed version, the latest release the proxy's token can see, and the trigger.
+  // "Update proxy now": the installed version, the latest release of this (public) repository, and the trigger.
+  // The release is looked up with the proxy's token and, if GitHub refuses that, without a token.
+  const latestProxyRelease = async () => {
+    try {
+      return await getRelease(PROXY_REPO);
+    } catch (err) {
+      if (!(err instanceof NotFound) && !(err instanceof GithubError && err.status !== 'network')) throw err;
+      return getRelease(PROXY_REPO, undefined, null);
+    }
+  };
   const proxyUpdate = {
     version,
     async info() {
       const out = { installed: version, latest: null, newer: null, latestProblem: '', canUpdate: false, problem: '' };
       try {
-        const release = await getRelease(PROXY_REPO);
+        const release = await latestProxyRelease();
         out.latest = String(release.tag_name || '').replace(/^v/, '');
         if (parseVersion(out.latest) && parseVersion(version)) out.newer = compareVersions(out.latest, version) > 0;
       } catch (err) {
         if (err instanceof NotFound) {
-          out.latestProblem = `the proxy's token cannot see ${PROXY_REPO} (the updater may have a token of its own)`;
+          out.latestProblem = `no published release of ${PROXY_REPO} found`;
         } else if (err instanceof GithubError) {
           out.latestProblem = `GitHub request failed (${err.status})`;
         } else {

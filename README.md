@@ -1,5 +1,7 @@
 # Foundry release proxy
 
+<a href="https://dxcufgb.github.io/FVTT-dev-showcase/"><img src="https://dxcufgb.github.io/FVTT-dev-showcase/assets/img/workshop-badge.png" alt="Dxcufgb's Workshop: every Foundry VTT project, video and changelog in one place" width="650"></a>
+
 A tiny HTTP proxy that lets a self-hosted **Foundry VTT** server install and update modules whose releases live in
 **private GitHub repositories**. Foundry cannot authenticate to GitHub, so the proxy holds a read-only token, serves
 the module manifest, and passes the zip through from a short-lived GitHub URL with the module's own `module.json`

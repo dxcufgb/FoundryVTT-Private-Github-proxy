@@ -626,6 +626,11 @@ if a run fails, fix the cause and run it again: a draft left by the failed run i
 changed, and a run refuses to publish if the tag meanwhile points at a different commit than the one it built. For a
 release published by hand the files are uploaded to it and the download table is put in front of its notes.
 
+After publishing, the workflow asks the [Workshop site](https://github.com/dxcufgb/FVTT-dev-showcase) to rebuild (a
+`module-released` repository dispatch) when the repository secret `SITE_DISPATCH_TOKEN` is set: a fine-grained token
+with access to only `dxcufgb/FVTT-dev-showcase` and **Contents: Read and write**. Without it the site picks the
+release up at its next 6-hourly build; a refused ping is only a warning.
+
 Files of a release `X.Y.Z`:
 
 | File | What |

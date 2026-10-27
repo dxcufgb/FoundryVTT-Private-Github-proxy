@@ -113,6 +113,22 @@ test('with PATCH_ZIPS off the zip is a 302 to the pre-signed URL and never downl
   }
 });
 
+test('an asset redirect that is not https is refused', async () => {
+  const rel = release('o/transformations', 'v1.2.0');
+  const f = mockFetch({
+    [`${API}/repos/o/transformations/releases/tags/v1.2.0`]: () => json(rel),
+    [rel.assets[1].url]: () => redirect('http://objects.example/signed-zip'),
+  });
+  const s = await start(one, f, { patchZips: false });
+  try {
+    const res = await fetch(`${s.url}/transformations/v1.2.0/module.zip`, { redirect: 'manual' });
+    assert.equal(res.status, 502);
+    assert.equal(res.headers.get('location'), null);
+  } finally {
+    await s.close();
+  }
+});
+
 test('two modules are routed to their own repos', async () => {
   const a = release('o/alpha', 'v1.0.0');
   const b = release('o/beta', 'v2.0.0');

@@ -353,7 +353,8 @@ cookie (12 hours, in memory: restarting the proxy logs everybody out), marked `S
 needs a per-session CSRF token and a JSON body. Requests from other web sites (`Origin`) or for host names that are not
 this machine's own names or addresses, `localhost`, `PUBLIC_BASE_URL`'s, `ADMIN_PUBLIC_URL`'s or `ADMIN_HOSTS` are
 refused (a guard against DNS rebinding). Five wrong passwords lock that address out for five minutes, and more than 50
-failed logins within 15 minutes from anywhere pause every login for a while. The page has a strict
+failed logins within 15 minutes from anywhere pause wrong passwords for a while (the right password still gets in, so
+failed logins from elsewhere cannot lock you out). The page has a strict
 Content-Security-Policy and is never cached. The GitHub token is never shown on it.
 
 **Settings file.** `admin.json` next to `config.json` (`/etc/foundry-release-proxy/admin.json`,

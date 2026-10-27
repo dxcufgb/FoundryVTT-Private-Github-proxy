@@ -209,6 +209,9 @@ function createApp({
     if (!REDIRECTS.has(res.status) || !location) {
       throw new GithubError('asset download did not redirect', res.status);
     }
+    // GitHub's pre-signed asset URLs are always https; refuse anything else before Foundry is sent there or the
+    // proxy streams from it.
+    if (!/^https:\/\//i.test(location)) throw new GithubError('asset redirect was not an https URL', res.status);
     return { location, size: asset.size };
   }
 

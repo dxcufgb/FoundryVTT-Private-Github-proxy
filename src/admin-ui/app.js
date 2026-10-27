@@ -59,7 +59,7 @@
     closeMenu();
     $('#app-view').hidden = true;
     $('#top-actions').hidden = true;
-    $('#brand-logo').hidden = true;
+    $('#brand-logo').hidden = false;  // keep the logo top-left on the login screen too
     $('#app-footer').hidden = false;
     $('#footer-version').hidden = true;
     $('#footer-actions').hidden = true;

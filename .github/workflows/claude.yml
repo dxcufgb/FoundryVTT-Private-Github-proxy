@@ -15,6 +15,7 @@ name: Claude
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
+  # zizmor: ignore[dangerous-triggers] -- only runs on an @claude mention, and the action refuses commenters without write access; no PR code is checked out with credentials
   issue_comment:
     types: [created]
   pull_request_review_comment:

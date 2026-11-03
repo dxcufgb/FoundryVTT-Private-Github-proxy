@@ -97,7 +97,7 @@ installs new releases of the proxy itself.
 
 ## Install on Linux and releasing
 - **Install on Linux**: `curl -fsSL https://raw.githubusercontent.com/dxcufgb/install/main/install.sh | sudo bash -s foundry-release-proxy`,
-  or download `foundry-release-proxy-linux.tar.gz`, `tar xzf`, `cd foundry-release-proxy-X.Y.Z`, `sudo ./install.sh`. Options: see the README.
+  or download `foundry-release-proxy-linux.tar.gz`, `tar xzf`, `cd foundry-release-proxy-X.Y.Z`, `sudo ./install.sh`. Options: see the wiki's Install on Linux page.
 - **Releasing**: Actions → Release → Run workflow → type the version. Fallback: publish a release `vX.Y.Z` on GitHub,
   files are attached afterwards. No version bump in the code.
 
@@ -110,7 +110,7 @@ installs new releases of the proxy itself.
   `GithubError` → 502 with a generic body, anything else → 500 "internal error".
 - Logging is one plain line through the injected `log`, prefixed with the module id.
 - Behaviour changes need a test in `test/server.test.js` (or `test/updater.test.js`) and matching
-  README edits (the README documents routes, status codes and error messages).
+  wiki edits (the wiki's How the Proxy Works and Configuration Reference pages document routes, status codes and error messages).
 
 ## Review focus
 - **The token** may only go to `api.github.com` and to asset URLs taken from GitHub's JSON. The

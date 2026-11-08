@@ -264,10 +264,14 @@ test('malformed configs are rejected', () => {
     '{"bad id": {"repo": "o/r"}}',
     '{"m": {"repo": "o/r", "zipAsset": 5}}',
     '{"m": {"repo": "o/r", "typo": "x"}}',
+    '{"m": {"repo": "o/r", "type": "system"}}',
+    '{"m": {"repo": "o/r", "type": 1}}',
   ];
   for (const text of bad) assert.throws(() => parseConfig(text), ConfigError, text);
   const ok = parseConfig('{"m": {"repo": "o/r"}}');
-  assert.deepEqual(ok.m, { repo: 'o/r', manifestAsset: 'module.json', zipAsset: 'module.zip' });
+  assert.deepEqual(ok.m, { repo: 'o/r', type: 'module', manifestAsset: 'module.json', zipAsset: 'module.zip' });
+  const world = parseConfig('{"w": {"repo": "o/r", "type": "world"}}');
+  assert.deepEqual(world.w, { repo: 'o/r', type: 'world', manifestAsset: 'world.json', zipAsset: 'world.zip' });
 });
 
 test('the process refuses to start with a malformed config', () => {
@@ -426,6 +430,93 @@ test('a broken partial read while planning falls back to the redirect', async ()
   try {
     const res = await fetch(`${s.url}/transformations/v1.2.0/module.zip`, { redirect: 'manual' });
     assert.equal(res.status, 302);
+  } finally {
+    await s.close();
+  }
+});
+
+// Backed-up worlds: {"type": "world"} serves world.json and world.zip instead of module.json and module.zip.
+const worlds = { campaign: { repo: 'o/campaign', type: 'world' } };
+
+test('a world serves world.json with its links pointing at world.json and world.zip', async () => {
+  const rel = release('o/campaign', 'v2.0.0', ['world.json', 'world.zip']);
+  const f = mockFetch({
+    [`${API}/repos/o/campaign/releases/latest`]: () => json(rel),
+    [rel.assets[0].url]: () => redirect('https://objects.example/signed-world'),
+    'https://objects.example/signed-world': () => json({ id: 'campaign', title: 'Campaign', manifest: 'old', download: 'old' }),
+  });
+  const s = await start(worlds, f);
+  try {
+    const res = await fetch(`${s.url}/campaign/world.json`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.title, 'Campaign');
+    assert.equal(body.manifest, `${BASE}/campaign/world.json`);
+    assert.equal(body.download, `${BASE}/campaign/v2.0.0/world.zip`);
+    assert.equal(f.calls[2].init.headers?.Authorization, undefined);
+  } finally {
+    await s.close();
+  }
+});
+
+test('a world answers only to world.json/world.zip, a module only to module.json/module.zip', async () => {
+  const f = mockFetch({});
+  const s = await start({ ...one, ...worlds }, f);
+  try {
+    for (const p of ['/campaign/module.json', '/campaign/v1/module.zip', '/campaign/world.zip',
+      '/transformations/world.json', '/transformations/v1/world.zip']) {
+      assert.equal((await fetch(`${s.url}${p}`, { redirect: 'manual' })).status, 404, p);
+    }
+    assert.equal(f.calls.length, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test('a world zip is streamed with its world.json pointing at the proxy', async () => {
+  const buf = makeZip([
+    { name: 'campaign/data/actors.db', data: 'actor\n'.repeat(400) },
+    { name: 'campaign/world.json', data: JSON.stringify({ id: 'campaign', title: 'Campaign',
+      manifest: 'https://github.com/o/campaign/releases/latest/download/world.json' }) },
+  ]);
+  const rel = release('o/campaign', 'v2.0.0', ['world.json', 'world.zip']);
+  rel.assets[1].size = buf.length;
+  const lines = [];
+  const f = mockFetch({
+    [`${API}/repos/o/campaign/releases/tags/v2.0.0`]: () => json(rel),
+    [rel.assets[1].url]: () => redirect('https://objects.example/signed-world-zip'),
+    'https://objects.example/signed-world-zip': signedZip(buf),
+  });
+  const s = await start(worlds, f, { log: (l) => lines.push(l) });
+  try {
+    const res = await fetch(`${s.url}/campaign/v2.0.0/world.zip`, { redirect: 'manual' });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-disposition'), /filename="world\.zip"/);
+    const files = readZip(Buffer.from(await res.arrayBuffer()));
+    assert.deepEqual(files['campaign/data/actors.db'], readZip(buf)['campaign/data/actors.db']);
+    const w = JSON.parse(files['campaign/world.json']);
+    assert.equal(w.manifest, `${BASE}/campaign/world.json`);
+    assert.equal(w.download, `${BASE}/campaign/v2.0.0/world.zip`);
+    assert.ok(lines.some((l) => /served with its world.json pointing at the proxy/.test(l)));
+  } finally {
+    await s.close();
+  }
+});
+
+test('a world zip without a world.json falls back to the redirect', async () => {
+  const buf = releaseZip(); // has a module.json, not a world.json
+  const rel = release('o/campaign', 'v2.0.0', ['world.json', 'world.zip']);
+  rel.assets[1].size = buf.length;
+  const f = mockFetch({
+    [`${API}/repos/o/campaign/releases/tags/v2.0.0`]: () => json(rel),
+    [rel.assets[1].url]: () => redirect('https://objects.example/signed-world-zip'),
+    'https://objects.example/signed-world-zip': signedZip(buf),
+  });
+  const s = await start(worlds, f);
+  try {
+    const res = await fetch(`${s.url}/campaign/v2.0.0/world.zip`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), 'https://objects.example/signed-world-zip');
   } finally {
     await s.close();
   }

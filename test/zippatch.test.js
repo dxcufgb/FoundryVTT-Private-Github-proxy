@@ -90,3 +90,13 @@ test('the root module.json wins over one in a folder', () => {
   })());
   assert.equal(zip.findManifest(entries).name, 'module.json');
 });
+
+test('findManifest finds world.json for a world zip, at the top or in a single folder', () => {
+  const at = (names) => names.map((name) => ({ name }));
+  assert.equal(zip.findManifest(at(['world.json', 'data/a.db']), 'world.json').name, 'world.json');
+  assert.equal(zip.findManifest(at(['w/world.json', 'w/data/a.db']), 'world.json').name, 'w/world.json');
+  assert.equal(zip.findManifest(at(['module.json']), 'world.json'), null);
+  assert.equal(zip.findManifest(at(['a/world.json', 'b/world.json']), 'world.json'), null);
+  assert.equal(zip.findManifest(at(['a/b/world.json']), 'world.json'), null);
+  assert.equal(zip.findManifest(at(['module.json'])).name, 'module.json');
+});

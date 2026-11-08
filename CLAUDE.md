@@ -4,7 +4,9 @@ A dependency-free Node HTTP proxy (`src/server.js`) that lets Foundry VTT instal
 released from **private** GitHub repositories. It holds a GitHub token, serves a module's
 `module.json` from the latest (or a tagged) release with `manifest`/`download` rewritten to point
 at the proxy, and serves zips from GitHub's pre-signed asset URL with the `module.json` inside rewritten the same way
-(Foundry's update check uses that one), falling back to a `302` to that URL. It runs as a
+(Foundry's update check uses that one), falling back to a `302` to that URL. A config entry with `"type": "world"` is a
+backed-up world: the same, with `world.json`/`world.zip` (routes, default asset names and the file patched in the zip);
+a module answers only to `module.*`, a world only to `world.*`. It runs as a
 systemd service on a Raspberry Pi next to Foundry, or as a Windows scheduled task. An opt-in auto-updater
 installs new releases of the proxy itself.
 

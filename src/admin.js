@@ -435,7 +435,7 @@ function createAdmin({
     const modules = getModules();
     return Object.keys(modules)
       .sort()
-      .map((id) => ({ id, ...modules[id], link: `${base}/${encodeURIComponent(id)}/module.json` }));
+      .map((id) => ({ id, ...modules[id], link: `${base}/${encodeURIComponent(id)}/${modules[id].type}.json` }));
   }
 
   function notifyView() {
@@ -460,12 +460,14 @@ function createAdmin({
     };
   }
 
-  /** Builds a module entry from a request body; only non-default asset names are stored. */
+  /** Builds a module (or world) entry from a request body; only a non-default type and asset names are stored. */
   function moduleEntry(body) {
     const entry = { repo: typeof body.repo === 'string' ? body.repo.trim() : body.repo };
+    const type = body.type === undefined || body.type === '' ? 'module' : body.type;
+    if (type !== 'module') entry.type = type;
     for (const key of ['manifestAsset', 'zipAsset']) {
       const v = typeof body[key] === 'string' ? body[key].trim() : body[key];
-      const dflt = key === 'manifestAsset' ? 'module.json' : 'module.zip';
+      const dflt = key === 'manifestAsset' ? `${type}.json` : `${type}.zip`;
       if (v !== undefined && v !== '' && v !== dflt) entry[key] = v;
     }
     return entry;
@@ -488,10 +490,11 @@ function createAdmin({
     // null prototype: an id like "__proto__" becomes a real key and is refused by validation
     const raw = Object.create(null);
     for (const id of Object.keys(modules)) {
-      const { repo, manifestAsset, zipAsset } = modules[id];
+      const { repo, type, manifestAsset, zipAsset } = modules[id];
       raw[id] = { repo };
-      if (manifestAsset !== 'module.json') raw[id].manifestAsset = manifestAsset;
-      if (zipAsset !== 'module.zip') raw[id].zipAsset = zipAsset;
+      if (type !== 'module') raw[id].type = type;
+      if (manifestAsset !== `${type}.json`) raw[id].manifestAsset = manifestAsset;
+      if (zipAsset !== `${type}.zip`) raw[id].zipAsset = zipAsset;
     }
     return raw;
   }

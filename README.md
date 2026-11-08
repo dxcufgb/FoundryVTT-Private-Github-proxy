@@ -16,6 +16,17 @@ scheduled task on Windows, and can optionally keep itself up to date from this r
 when it did). A password-protected **administration page** (`/_admin/`) lists the modules, adds, edits and deletes them,
 copies a module's link for Foundry, and manages the notification e-mail addresses.
 
+It serves **backed-up worlds** the same way: give an entry `"type": "world"` in `config.json` (or pick *World* on the
+admin page) and the proxy serves the release's `world.json` and `world.zip` instead of `module.json` and `module.zip`,
+at `http://<proxy>/<id>/world.json` (the *Manifest URL* for Foundry's *Install World*):
+
+```json
+{
+  "transformations": { "repo": "owner/FoundryVTT-Transformations" },
+  "my-campaign": { "repo": "owner/my-campaign-backup", "type": "world" }
+}
+```
+
 ## Installation
 
 Linux (including a Raspberry Pi):

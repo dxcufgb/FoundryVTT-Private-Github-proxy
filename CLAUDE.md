@@ -4,7 +4,9 @@ A dependency-free Node HTTP proxy (`src/server.js`) that lets Foundry VTT instal
 released from **private** GitHub repositories. It holds a GitHub token, serves a module's
 `module.json` from the latest (or a tagged) release with `manifest`/`download` rewritten to point
 at the proxy, and serves zips from GitHub's pre-signed asset URL with the `module.json` inside rewritten the same way
-(Foundry's update check uses that one), falling back to a `302` to that URL. It runs as a
+(Foundry's update check uses that one), falling back to a `302` to that URL. A config entry with `"type": "world"` is a
+backed-up world: the same, with `world.json`/`world.zip` (routes, default asset names and the file patched in the zip);
+a module answers only to `module.*`, a world only to `world.*`. It runs as a
 systemd service on a Raspberry Pi next to Foundry, or as a Windows scheduled task. An opt-in auto-updater
 installs new releases of the proxy itself.
 
@@ -18,8 +20,8 @@ installs new releases of the proxy itself.
   first byte goes to https, anything else gets a 301 to https://), `/` → `/_admin/`, and a self-signed certificate (only
   the certificate) at `/_admin/certificate.crt`, which the login page links (Chrome saves no passwords on an untrusted
   certificate).
-- `src/zippatch.js` – rewrites the `module.json` inside a zip without unpacking or buffering it: reads the end record and
-  central directory, finds the top-level (or single-folder) `module.json`, and builds what follows the unchanged prefix
+- `src/zippatch.js` – rewrites the `module.json` (`world.json` for a world) inside a zip without unpacking or buffering
+  it: reads the end record and central directory, finds the top-level (or single-folder) manifest, and builds what follows the unchanged prefix
   (a new local entry, the central directory pointing at it, a new end record). Refuses (`ZipPatchError`) ZIP64,
   multi-disk, encrypted or odd-method zips; the server then falls back to the redirect.
 - `src/selfsigned.js` – ECDSA P-256 self-signed X.509 certificate built with `node:crypto` (DER by hand); CLI writes
@@ -116,9 +118,9 @@ installs new releases of the proxy itself.
 - **The token** may only go to `api.github.com` and to asset URLs taken from GitHub's JSON. The
   pre-signed redirect `location` must be fetched **without** auth, and the token must never
   appear in a response body or a log line (both are tested).
-- **Zips**: the proxy streams a module zip from its pre-signed URL (fetched **without** auth, partial `Range` reads only)
-  and changes nothing but the `module.json` reference at the end (`src/zippatch.js`). It never unpacks the zip or holds
-  it in memory (only the end of the zip and `module.json`, with size caps); anything unexpected before the first byte
+- **Zips**: the proxy streams a module (or world) zip from its pre-signed URL (fetched **without** auth, partial `Range`
+  reads only) and changes nothing but the `module.json` (`world.json`) reference at the end (`src/zippatch.js`). It never
+  unpacks the zip or holds it in memory (only the end of the zip and the manifest, with size caps); anything unexpected before the first byte
   falls back to the `302`, and a failure after it tears the connection down (never a truncated zip that looks whole).
   `PATCH_ZIPS=off` restores plain redirects.
 - **Path handling**: requests are 2–3 path segments, each `decodeURIComponent`'d (bad escapes →

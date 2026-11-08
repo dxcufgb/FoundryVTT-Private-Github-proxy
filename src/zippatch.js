@@ -1,5 +1,5 @@
 'use strict';
-// Rewrites the module.json inside a module zip without unpacking or buffering the zip.
+// Rewrites the module.json (or world.json) inside a module (or world) zip without unpacking or buffering the zip.
 //
 // A zip ends with its central directory (the table of contents: one record per file, with the offset of the file's
 // data) and an end-of-central-directory record. Readers find files through the central directory, not by scanning.
@@ -106,22 +106,25 @@ function readCentral(central, count) {
 }
 
 /**
- * The module.json Foundry reads: the one at the top of the zip, or else the only one directly inside a single
- * top-level folder. null when there is none or it is ambiguous.
+ * The manifest Foundry reads (module.json, or world.json for a world): the one at the top of the zip, or else the only
+ * one directly inside a single top-level folder. null when there is none or it is ambiguous.
  */
-function findManifest(entries) {
-  const root = entries.filter((e) => e.name === 'module.json');
+function findManifest(entries, name = 'module.json') {
+  const root = entries.filter((e) => e.name === name);
   if (root.length === 1) return root[0];
   if (root.length > 1) return null;
-  const nested = entries.filter((e) => /^[^/]+\/module\.json$/.test(e.name));
+  const nested = entries.filter((e) => {
+    const slash = e.name.indexOf('/');
+    return slash > 0 && e.name.slice(slash + 1) === name;
+  });
   return nested.length === 1 ? nested[0] : null;
 }
 
 /** Bytes to fetch for an entry's data: its local header can carry a longer extra field than the central record. */
 function localSpan(entry) {
-  if (entry.flags & FLAG_ENCRYPTED) throw new ZipPatchError('encrypted module.json');
-  if (entry.method !== 0 && entry.method !== 8) throw new ZipPatchError(`module.json uses compression method ${entry.method}`);
-  if (entry.compressedSize > MAX_MANIFEST_BYTES || entry.size > MAX_MANIFEST_BYTES) throw new ZipPatchError('module.json too large');
+  if (entry.flags & FLAG_ENCRYPTED) throw new ZipPatchError('encrypted manifest');
+  if (entry.method !== 0 && entry.method !== 8) throw new ZipPatchError(`manifest uses compression method ${entry.method}`);
+  if (entry.compressedSize > MAX_MANIFEST_BYTES || entry.size > MAX_MANIFEST_BYTES) throw new ZipPatchError('manifest too large');
   return { start: entry.localOffset, length: 30 + 2 * 0xffff + entry.compressedSize };
 }
 
@@ -130,15 +133,15 @@ function readLocal(entry, bytes) {
   if (bytes.length < 30 || bytes.readUInt32LE(0) !== SIG_LOCAL) throw new ZipPatchError('damaged local header');
   const dataStart = 30 + bytes.readUInt16LE(26) + bytes.readUInt16LE(28);
   const data = bytes.subarray(dataStart, dataStart + entry.compressedSize);
-  if (data.length !== entry.compressedSize) throw new ZipPatchError('module.json data cut short');
+  if (data.length !== entry.compressedSize) throw new ZipPatchError('manifest data cut short');
   let content;
   try {
     content = entry.method === 0 ? Buffer.from(data) : zlib.inflateRawSync(data, { maxOutputLength: MAX_MANIFEST_BYTES });
   } catch (err) {
-    throw new ZipPatchError(`module.json does not decompress (${err.message})`);
+    throw new ZipPatchError(`manifest does not decompress (${err.message})`);
   }
   if (content.length !== entry.size || crc32(content) !== entry.raw.readUInt32LE(16)) {
-    throw new ZipPatchError('module.json checksum mismatch');
+    throw new ZipPatchError('manifest checksum mismatch');
   }
   return content;
 }
@@ -152,9 +155,9 @@ function patchManifestText(content, manifestUrl, downloadUrl) {
   try {
     data = JSON.parse(content.toString('utf8').replace(/^﻿/, ''));
   } catch (err) {
-    throw new ZipPatchError(`module.json is not valid JSON (${err.message})`);
+    throw new ZipPatchError(`manifest is not valid JSON (${err.message})`);
   }
-  if (data === null || typeof data !== 'object' || Array.isArray(data)) throw new ZipPatchError('module.json is not an object');
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) throw new ZipPatchError('manifest is not an object');
   if (data.manifest === manifestUrl && data.download === downloadUrl) return null;
   data.manifest = manifestUrl;
   data.download = downloadUrl;

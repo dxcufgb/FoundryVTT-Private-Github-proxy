@@ -72,11 +72,12 @@
         </div>
         <p class="hint">Each module is a private GitHub repository the proxy serves. Give Foundry the module's link
           (<em>Manifest URL</em> in <em>Install Module</em>); <strong>Copy link</strong> in the module's <strong>⋯</strong>
-          menu puts it on the clipboard.</p>
+          menu puts it on the clipboard. A backed-up world (type <em>World</em>) works the same way: give its link to
+          <em>Install World</em>.</p>
         <div class="table-wrap">
           <table id="modules">
             <thead>
-              <tr><th>Module id</th><th>Repository</th><th>Release assets</th><th>Link for Foundry</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr>
+              <tr><th>Module id</th><th>Type</th><th>Repository</th><th>Release assets</th><th>Link for Foundry</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -204,7 +205,11 @@
     <form id="module-form" method="dialog">
       <h2 id="module-dialog-title">Add module</h2>
       <label>Module id <input name="moduleId" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]*" placeholder="transformations">
-        <small>Letters, digits, "-" and "_"; usually the module's id in module.json. It is part of the link.</small></label>
+        <small>Letters, digits, "-" and "_"; usually the id in module.json (world.json). It is part of the link.</small></label>
+      <label>Type <select name="type">
+          <option value="module">Module (module.json, module.zip)</option>
+          <option value="world">World (world.json, world.zip)</option>
+        </select></label>
       <label>GitHub repository <input name="repo" required pattern="[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+" placeholder="owner/name"></label>
       <details>
         <summary>Release asset names</summary>

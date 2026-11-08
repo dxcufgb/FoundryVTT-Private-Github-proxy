@@ -1,5 +1,5 @@
 'use strict';
-// Proxy that lets Foundry VTT install/update modules released from private GitHub repos.
+// Proxy that lets Foundry VTT install/update modules (and backed-up worlds) released from private GitHub repos.
 // No dependencies: built-in http, fs and fetch only.
 
 const http = require('node:http');
@@ -21,6 +21,9 @@ const MODULE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const ASSET_RE = /^[^/\\\s][^/\\]*$/;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+// What a config entry serves: a module (module.json + module.zip) or a backed-up world (world.json + world.zip).
+// The type also names the files in the proxy's links.
+const PACKAGE_TYPES = ['module', 'world'];
 // A token that expires within this many days is reported as a warning by "Test setup".
 const EXPIRY_WARN_DAYS = 14;
 // Longest a zip download through the proxy may take before it is cut off.
@@ -113,11 +116,15 @@ function parseConfig(text, source = 'config', { allowEmpty = false } = {}) {
     if (typeof entry.repo !== 'string' || !REPO_RE.test(entry.repo)) {
       throw new ConfigError(`${source}: module "${id}" needs "repo" in the form "owner/name"`);
     }
-    const known = new Set(['repo', 'manifestAsset', 'zipAsset']);
+    const known = new Set(['repo', 'type', 'manifestAsset', 'zipAsset']);
     for (const key of Object.keys(entry)) {
       if (!known.has(key)) throw new ConfigError(`${source}: module "${id}" has unknown key "${key}"`);
     }
-    const cfg = { repo: entry.repo, manifestAsset: 'module.json', zipAsset: 'module.zip' };
+    const type = entry.type === undefined ? 'module' : entry.type;
+    if (!PACKAGE_TYPES.includes(type)) {
+      throw new ConfigError(`${source}: module "${id}" has an invalid "type" (${PACKAGE_TYPES.map((t) => `"${t}"`).join(' or ')})`);
+    }
+    const cfg = { repo: entry.repo, type, manifestAsset: `${type}.json`, zipAsset: `${type}.zip` };
     for (const key of ['manifestAsset', 'zipAsset']) {
       if (entry[key] === undefined) continue;
       if (typeof entry[key] !== 'string' || !ASSET_RE.test(entry[key])) {
@@ -235,10 +242,16 @@ function createApp({
     return bytes;
   }
 
-  // What it takes to serve the zip with its module.json pointing at the proxy: the length of the original prefix
-  // (streamed unchanged) and the bytes that follow it. Throws ZipPatchError (or GithubError) to fall back to the
-  // redirect.
-  async function planPatchedZip(moduleId, release, link) {
+  // The proxy's "manifest" and "download" links for a module (module.json, module.zip) or world (world.json, world.zip).
+  const proxyLinks = (id, release, type) => [
+    `${base}/${id}/${type}.json`,
+    `${base}/${id}/${encodeURIComponent(release.tag_name)}/${type}.zip`,
+  ];
+
+  // What it takes to serve the zip with its module.json (world.json) pointing at the proxy: the length of the original
+  // prefix (streamed unchanged) and the bytes that follow it. Throws ZipPatchError (or GithubError) to fall back to
+  // the redirect.
+  async function planPatchedZip(moduleId, release, link, type) {
     const { location, size } = link;
     if (!Number.isSafeInteger(size) || size < 22) throw new zip.ZipPatchError('unknown zip size');
     const tailStart = size - Math.min(size, zip.TAIL_BYTES);
@@ -248,21 +261,17 @@ function createApp({
       ? tail.subarray(centralOffset - tailStart, centralOffset - tailStart + centralSize)
       : await fetchRange(location, centralOffset, centralOffset + centralSize - 1);
     const entries = zip.readCentral(central, count);
-    const target = zip.findManifest(entries);
-    if (!target) throw new zip.ZipPatchError('no module.json at the top of the zip');
+    const target = zip.findManifest(entries, `${type}.json`);
+    if (!target) throw new zip.ZipPatchError(`no ${type}.json at the top of the zip`);
     const span = zip.localSpan(target);
     if (span.start >= centralOffset) throw new zip.ZipPatchError('damaged central directory');
     const local = await fetchRange(location, span.start, Math.min(span.start + span.length, centralOffset) - 1);
-    const content = zip.patchManifestText(
-      zip.readLocal(target, local),
-      `${base}/${moduleId}/module.json`,
-      `${base}/${moduleId}/${encodeURIComponent(release.tag_name)}/module.zip`,
-    );
-    if (!content) throw new zip.ZipPatchError('its module.json already points at the proxy');
+    const content = zip.patchManifestText(zip.readLocal(target, local), ...proxyLinks(moduleId, release, type));
+    if (!content) throw new zip.ZipPatchError(`its ${type}.json already points at the proxy`);
     return { prefixLength: centralOffset, tail: zip.buildTail({ entries, target, content, centralOffset }) };
   }
 
-  // A module zip. Foundry checks for updates with the "manifest" URL of the module.json INSIDE the zip, so that one
+  // A module (or world) zip. Foundry checks for updates with the "manifest" URL of the module.json INSIDE the zip, so that one
   // is pointed at the proxy: the original bytes are streamed through unchanged up to the zip's central directory,
   // then the patched module.json and a new directory follow (see zippatch.js). Anything unexpected before the first
   // byte is sent falls back to the plain redirect to GitHub (also PATCH_ZIPS=off).
@@ -276,7 +285,7 @@ function createApp({
     if (!patchZips) return redirect('');
     let plan;
     try {
-      plan = await planPatchedZip(moduleId, release, link);
+      plan = await planPatchedZip(moduleId, release, link, cfg.type);
     } catch (err) {
       if (err instanceof zip.ZipPatchError || err instanceof GithubError) return redirect(err.message);
       throw err;
@@ -284,7 +293,7 @@ function createApp({
     const headers = {
       'Content-Type': 'application/zip',
       'Content-Length': String(plan.prefixLength + plan.tail.length),
-      'Content-Disposition': 'attachment; filename="module.zip"',
+      'Content-Disposition': `attachment; filename="${cfg.type}.zip"`,
       'Cache-Control': 'no-store',
     };
     if (req.method === 'HEAD') {
@@ -330,7 +339,7 @@ function createApp({
       }
       if (sent !== plan.prefixLength) throw new Error('download cut short');
       res.end(plan.tail);
-      log(`${moduleId}: zip ${tag} served with its module.json pointing at the proxy`);
+      log(`${moduleId}: zip ${tag} served with its ${cfg.type}.json pointing at the proxy`);
     } catch (err) {
       log(`${moduleId}: zip ${tag} failed after ${sent} bytes (${err.message})`);
       res.destroy();
@@ -350,8 +359,7 @@ function createApp({
     } catch {
       throw new GithubError('manifest is not valid JSON', res.status);
     }
-    manifest.manifest = `${base}/${moduleId}/module.json`;
-    manifest.download = `${base}/${moduleId}/${encodeURIComponent(release.tag_name)}/module.zip`;
+    [manifest.manifest, manifest.download] = proxyLinks(moduleId, release, cfg.type);
     return manifest;
   }
 
@@ -658,15 +666,18 @@ function createApp({
     const [moduleId] = segments;
     const last = segments[segments.length - 1];
     const tag = segments.length === 3 ? segments[1] : undefined;
-    const shapeOk =
-      (segments.length === 2 && last === 'module.json') ||
-      (segments.length === 3 && tag && (last === 'module.json' || last === 'module.zip'));
-    if (!shapeOk || !Object.hasOwn(modules, moduleId)) return send(res, 404, 'not found');
+    if ((segments.length !== 2 && !(segments.length === 3 && tag)) || !Object.hasOwn(modules, moduleId)) {
+      return send(res, 404, 'not found');
+    }
     const cfg = modules[moduleId];
+    // A module answers to module.json/module.zip only, a world to world.json/world.zip only.
+    const isManifest = last === `${cfg.type}.json`;
+    const isZip = last === `${cfg.type}.zip` && segments.length === 3;
+    if (!isManifest && !isZip) return send(res, 404, 'not found');
 
     try {
       const release = await getRelease(cfg.repo, tag);
-      if (last === 'module.zip') return await serveZip(req, res, moduleId, release, cfg);
+      if (isZip) return await serveZip(req, res, moduleId, release, cfg);
       const manifest = await manifestFor(moduleId, release, cfg);
       log(`${moduleId}: served manifest ${release.tag_name}`);
       return send(res, 200, JSON.stringify(manifest, null, 2), { 'Content-Type': 'application/json' });

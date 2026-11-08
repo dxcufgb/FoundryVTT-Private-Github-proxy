@@ -447,6 +447,7 @@
       wireMenu(button, menu);
       body.append(el('tr', {}, [
         el('td', {}, [el('strong', { text: m.id })]),
+        el('td', { text: m.type === 'world' ? 'World' : 'Module' }),
         el('td', {}, [el('code', { text: m.repo }), status]),
         el('td', {}, [el('code', { text: assets })]),
         el('td', {}, [el('code', { text: m.link })]),
@@ -495,13 +496,23 @@
     $('#module-dialog-title').textContent = m ? `Edit ${m.id}` : 'Add module';
     $('#module-error').hidden = true;
     if (m) {
+      const type = m.type || 'module';
       form.moduleId.value = m.id;
+      form.type.value = type;
       form.repo.value = m.repo;
-      form.manifestAsset.value = m.manifestAsset === 'module.json' ? '' : m.manifestAsset;
-      form.zipAsset.value = m.zipAsset === 'module.zip' ? '' : m.zipAsset;
-      form.querySelector('details').open = m.manifestAsset !== 'module.json' || m.zipAsset !== 'module.zip';
+      form.manifestAsset.value = m.manifestAsset === `${type}.json` ? '' : m.manifestAsset;
+      form.zipAsset.value = m.zipAsset === `${type}.zip` ? '' : m.zipAsset;
+      form.querySelector('details').open = m.manifestAsset !== `${type}.json` || m.zipAsset !== `${type}.zip`;
     }
+    assetPlaceholders();
     $('#module-dialog').showModal();
+  }
+
+  // The default asset names follow the type: module.json/module.zip or world.json/world.zip.
+  function assetPlaceholders() {
+    const form = $('#module-form');
+    form.manifestAsset.placeholder = `${form.type.value}.json`;
+    form.zipAsset.placeholder = `${form.type.value}.zip`;
   }
 
   async function saveModule(e) {
@@ -509,6 +520,7 @@
     const form = e.currentTarget;
     const body = {
       id: form.moduleId.value.trim(),
+      type: form.type.value,
       repo: form.repo.value.trim(),
       manifestAsset: form.manifestAsset.value.trim(),
       zipAsset: form.zipAsset.value.trim(),
@@ -703,6 +715,7 @@
     });
     $('#add-module').addEventListener('click', () => openModule(null));
     $('#module-form').addEventListener('submit', saveModule);
+    $('#module-form').type.addEventListener('change', assetPlaceholders);
     $('#module-cancel').addEventListener('click', () => $('#module-dialog').close());
     $('#token-form').addEventListener('submit', saveTypedToken);
     $('#token-add').addEventListener('click', openTokenDialog);

@@ -222,9 +222,9 @@ test('login sets a strict HttpOnly cookie and lists the modules with their Found
     assert.match(setCookie, /Path=\/_admin/);
     assert.ok(res.data.csrf);
     assert.deepEqual(res.data.modules, [
-      { id: 'alpha', repo: 'o/alpha', manifestAsset: 'module.json', zipAsset: 'module.zip',
+      { id: 'alpha', repo: 'o/alpha', type: 'module', manifestAsset: 'module.json', zipAsset: 'module.zip',
         link: `${BASE}/alpha/module.json` },
-      { id: 'beta', repo: 'o/beta', manifestAsset: 'module.json', zipAsset: 'beta.zip',
+      { id: 'beta', repo: 'o/beta', type: 'module', manifestAsset: 'module.json', zipAsset: 'beta.zip',
         link: `${BASE}/beta/module.json` },
     ]);
     assert.ok(!res.text.includes(TOKEN));
@@ -286,6 +286,28 @@ test('modules can be added, edited, renamed and deleted; config.json follows and
     assert.equal((await fetch(`${s.url}/alpha/module.json`)).status, 404);
     assert.ok(s.logs.some((l) => l === 'admin: deleted module alpha'));
     assert.ok(s.logs.every((l) => !l.includes(TOKEN)));
+  } finally {
+    await s.close();
+  }
+});
+
+test('a backed-up world can be added: config.json gets "type": "world" and its link is world.json', async () => {
+  const s = await start();
+  try {
+    await s.login();
+    let res = await s.call('POST', 'modules', { id: 'campaign', type: 'world', repo: 'o/campaign', manifestAsset: 'world.json', zipAsset: '' });
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(fs.readFileSync(s.configFile, 'utf8')).campaign, { repo: 'o/campaign', type: 'world' });
+    const w = res.data.modules.find((m) => m.id === 'campaign');
+    assert.equal(w.link, `${BASE}/campaign/world.json`);
+    assert.equal(w.zipAsset, 'world.zip');
+    // back to a module: the type is dropped from config.json again
+    res = await s.call('PUT', 'modules/campaign', { id: 'campaign', type: 'module', repo: 'o/campaign' });
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(fs.readFileSync(s.configFile, 'utf8')).campaign, { repo: 'o/campaign' });
+    res = await s.call('POST', 'modules', { id: 'bad', type: 'system', repo: 'o/x' });
+    assert.equal(res.status, 400);
+    assert.match(res.data.error, /invalid "type"/);
   } finally {
     await s.close();
   }
